@@ -1,0 +1,282 @@
+/* CockScale — design převzatý ze satarter.twentyone.cz (světlé teplé téma,
+   bitcoinová oranžová, sticky header, karty se stínem, pill "hero-points").
+   Fonty jen systémové — žádné externí requesty (anonymita). */
+
+:root {
+  --font-display: "Geist", system-ui, -apple-system, sans-serif;
+  --font-body: "Geist", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --display-weight: 800;
+  --display-spacing: -0.02em;
+  --bg: #fbf9f5;
+  --surface: #ffffff;
+  --surface-2: #f3efe7;
+  --fg: #1a1714;
+  --muted: #6f6552;          /* ztmaveno kvůli kontrastu (5.4:1 v hero) */
+  --line: #ece6da;
+  --accent: #f7931a;
+  --accent-2: #ffb454;
+  --accent-text: #a85e06;    /* odkazy: 4.9:1 na bílé (bylo 3.3:1) */
+  --accent-fg: #1a0a00;      /* text v tlačítku: 8.4:1 (bílá měla 2.3:1) */
+  --ok: #2f9e44;
+  --danger: #e03131;
+  --radius: 14px;
+  --radius-sm: 10px;
+  --border-w: 1px;
+  --shadow-card: 0 1px 2px #1a17140d, 0 12px 32px -16px #1a171426;
+  --shadow-btn: 0 8px 20px -10px #f7931a80;
+  --container: 64rem;
+}
+
+* { box-sizing: border-box; }
+html { font-size: 16px; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-body);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.container { max-width: var(--container); margin: 0 auto; padding: 0 1.25rem; }
+
+.site-header {
+  border-bottom: var(--border-w) solid var(--line);
+  background: var(--surface);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.site-header .container {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-top: .8rem;
+  padding-bottom: .8rem;
+}
+.brand {
+  font-family: var(--font-display);
+  font-weight: var(--display-weight);
+  letter-spacing: var(--display-spacing);
+  font-size: 1.3rem;
+  color: var(--fg);
+  white-space: nowrap;
+}
+.brand:hover { text-decoration: none; }
+.brand em { font-style: normal; color: var(--accent-text); }
+nav.main { display: flex; align-items: center; gap: 1.4rem; }
+nav.main a { color: var(--muted); font-weight: 600; font-size: .95rem; white-space: nowrap; }
+nav.main a:hover { color: var(--accent-text); text-decoration: none; }
+
+@media (max-width: 30rem) {
+  .site-header .container { gap: .5rem; }
+  nav.main { gap: 1rem; }
+  nav.main a { font-size: .88rem; }
+  .brand { font-size: 1.15rem; }
+  .hero { padding: 1.5rem 1.15rem; }
+  .hero h1 { font-size: 1.85rem; }
+  h1 { font-size: 1.7rem; }
+}
+
+main { flex: 1; padding-top: 1.5rem; padding-bottom: 2rem; }
+
+h1, h2 { font-family: var(--font-display); font-weight: var(--display-weight);
+  letter-spacing: var(--display-spacing); }
+h1 { font-size: 2.1rem; margin: 0 0 .6rem; }
+h2 { font-size: 1.4rem; margin: 1.8rem 0 .6rem; }
+a { color: var(--accent-text); text-decoration: none; }
+a:hover { text-decoration: underline; }
+p, li { max-width: 46rem; }
+
+.hero {
+  background: linear-gradient(180deg, #fff6e9, var(--surface));
+  border: var(--border-w) solid var(--line);
+  border-radius: var(--radius);
+  padding: 2.25rem 1.75rem;
+  margin-bottom: 1.75rem;
+  box-shadow: var(--shadow-card);
+}
+.hero h1 { font-size: 2.5rem; margin-bottom: .35rem; }
+.hero .lead { color: var(--muted); font-size: 1.05rem; max-width: 46rem; margin: 0 0 1.25rem; }
+.hero-points { display: flex; flex-wrap: wrap; gap: .5rem .7rem; font-size: .9rem; margin-bottom: 1.25rem; }
+.hero-points span {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  color: var(--fg);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: .3rem .75rem;
+}
+
+.card {
+  background: var(--surface);
+  border: var(--border-w) solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+  padding: 1.25rem;
+  margin-bottom: 1.25rem;
+}
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr)); gap: 1.25rem; }
+
+.btn, button {
+  display: inline-block;
+  font-family: var(--font-body);
+  font-weight: 700;
+  font-size: 1rem;
+  padding: .7rem 1.15rem;
+  border: var(--border-w) solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--fg);
+  cursor: pointer;
+  transition: transform .06s ease, box-shadow .15s ease, background .15s ease, border-color .15s ease;
+}
+.btn:hover, button:hover { text-decoration: none; border-color: var(--accent); color: var(--accent-text); }
+.btn:active, button:active { transform: translateY(1px); }
+.btn, button[type="submit"] { background: var(--accent); color: var(--accent-fg);
+  border-color: var(--accent); box-shadow: var(--shadow-btn); }
+.btn:hover, button[type="submit"]:hover { background: var(--accent-2); color: var(--accent-fg);
+  border-color: var(--accent-2); }
+button.secondary { background: var(--surface); color: var(--fg); border-color: var(--line); box-shadow: none; }
+button.danger { background: var(--surface); color: var(--danger); border-color: var(--danger); box-shadow: none; }
+button.danger:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
+button.small, .btn.small { padding: .4rem .7rem; font-size: .85rem; box-shadow: none; }
+
+.badge {
+  display: inline-block;
+  font-size: .78rem;
+  font-weight: 600;
+  padding: .15rem .6rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--muted);
+}
+.badge.ok { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+
+.qr {
+  background: #fff;
+  padding: 14px;
+  width: fit-content;
+  margin: 1.25rem 0;
+  border: var(--border-w) solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+}
+
+button.theme {
+  background: none;
+  border: 0;
+  box-shadow: none;
+  padding: .25rem;
+  font-size: 1.05rem;
+  line-height: 1;
+  cursor: pointer;
+  opacity: .75;
+}
+button.theme:hover { opacity: 1; background: none; border: 0; }
+
+h2 .hint { color: var(--muted); font-weight: 500; font-size: .95rem; letter-spacing: 0; }
+.back { display: inline-block; color: var(--muted); font-weight: 600; font-size: .9rem;
+  margin-bottom: .8rem; }
+.back:hover { color: var(--accent-text); text-decoration: none; }
+
+.mono { font-family: var(--font-mono); }
+.muted { color: var(--muted); }
+.small { font-size: .85rem; }
+.small.mono { font-size: .78rem; }
+
+.plans { display: flex; gap: .8rem; flex-wrap: wrap; }
+
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .93rem; }
+td, th { text-align: left; padding: .55rem .6rem; border-bottom: 1px solid var(--line); }
+th { color: var(--muted); font-weight: 600; font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; }
+
+input, textarea, select {
+  width: 100%;
+  font-family: var(--font-body);
+  font-size: 1rem;
+  padding: .55rem .7rem;
+  border: var(--border-w) solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--fg);
+}
+
+pre {
+  background: var(--surface-2);
+  border: var(--border-w) solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: .9rem 1rem;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: .85rem;
+}
+
+hr { border: 0; border-top: 1px solid var(--line); margin: 1.75rem 0; }
+
+details { margin: 1rem 0; }
+details summary { cursor: pointer; color: var(--muted); }
+
+footer {
+  border-top: var(--border-w) solid var(--line);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: .85rem;
+  padding: 1.2rem 0;
+  text-align: center;
+}
+
+
+/* ---- Tmavý režim ---------------------------------------------------------
+   Paleta „midnight" ze stejného design systému. Výchozí je nastavení systému,
+   přepínač v hlavičce ho přebije (data-theme na <html>, uloženo v localStorage
+   — žádná cookie, nic na server). MUSÍ zůstat na konci souboru: přepisuje
+   .hero a další pravidla se stejnou specificitou.
+   QR kód zůstává na bílém i v tmavém — jinak ho čtečky nepřečtou. */
+
+:root[data-theme="dark"] {
+  --bg: #08080b;
+  --surface: #131319;
+  --surface-2: #1b1b22;
+  --fg: #f4f4f5;
+  --muted: #a1a1aa;
+  --line: #ffffff1a;
+  --accent-2: #ffb454;
+  --accent-text: #ffb454;
+  --accent-fg: #08080b;
+  --shadow-card: 0 24px 60px -28px #000000bf;
+  --shadow-btn: 0 12px 28px -10px #f7931a73;
+  color-scheme: dark;
+}
+:root[data-theme="dark"] .hero {
+  background: linear-gradient(180deg, #1d1409, var(--surface));
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+  --bg: #08080b;
+    --surface: #131319;
+    --surface-2: #1b1b22;
+    --fg: #f4f4f5;
+    --muted: #a1a1aa;
+    --line: #ffffff1a;
+    --accent-2: #ffb454;
+    --accent-text: #ffb454;
+    --accent-fg: #08080b;
+    --shadow-card: 0 24px 60px -28px #000000bf;
+    --shadow-btn: 0 12px 28px -10px #f7931a73;
+    color-scheme: dark;
+  }
+  :root:not([data-theme="light"]) .hero {
+    background: linear-gradient(180deg, #1d1409, var(--surface));
+  }
+}

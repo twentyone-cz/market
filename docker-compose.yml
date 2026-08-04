@@ -1,0 +1,25 @@
+# Obchod — primitivní e-shop s Lightning platbou (phone.twentyone.cz/obchod)
+#
+# Web :8093 (proxuje nginx z phone.twentyone.cz/obchod), admin :8094 —
+# JEN LAN, nikdy veřejně. Tajemství (LNbits invoice key, captcha, CockScale
+# partner secret) se vkládají za běhu v admin UI; env jsou jen defaulty.
+
+services:
+  obchod:
+    build: ./frontend
+    image: it-one.cz/21/obchod:latest
+    container_name: obchod
+    restart: unless-stopped
+    ports:
+      - "8093:8093"
+      - "8094:8094"   # admin — jen LAN (firewall/síť to nesmí pustit ven)
+    environment:
+      BASE_PATH: /obchod
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?nastav ADMIN_PASSWORD}
+      NET_DASHBOARD_URL: ${NET_DASHBOARD_URL:-https://phone.twentyone.cz/app}
+      TZ: ${TZ:-Europe/Prague}
+    volumes:
+      - obchod-data:/var/lib/obchod
+
+volumes:
+  obchod-data:

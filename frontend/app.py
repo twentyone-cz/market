@@ -1,0 +1,608 @@
+"""Obchod — primitivní e-shop s Lightning platbou (jednadvacet phone).
+
+Čistá Python stdlib (žádný pip). Vzory převzaty z CockScale/frontend:
+ThreadingHTTPServer, settings v DB (admin UI, env jen default), LNbits
+invoice-only backend, Compute Captcha, rate limit v RAM, žádné logování IP.
+
+Zásady:
+  - žádné účty: objednávka = tajný token v URL (secrets.token_urlsafe)
+  - košík žije jen v prohlížeči (localStorage); server ceny/dostupnost
+    VŽDY přepočítá z DB — klientovi se nevěří
+  - doručovací údaje se po dokončení mažou (lifecycle wipe)
+  - BASE_PATH: aplikace umí běžet pod prefixem (např. /obchod za nginx)
+"""
+
+import html
+import json
+import os
+import secrets
+import threading
+import time
+import urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import captcha
+import payments
+import store
+import vouchers
+
+WEB_PORT = int(os.environ.get("WEB_PORT", "8093"))
+BASE = os.environ.get("BASE_PATH", "").rstrip("/")
+LIFECYCLE_INTERVAL = int(os.environ.get("LIFECYCLE_INTERVAL", "60"))
+NET_DASHBOARD = os.environ.get("NET_DASHBOARD_URL", "https://phone.twentyone.cz/app")
+
+manager = payments.PaymentManager(store)
+
+
+def u(path):
+    """Odkaz s BASE_PATH prefixem — všechny interní URL jdou tudy."""
+    return BASE + path
+
+
+def cfg_int(key, env, default):
+    raw = store.get_setting(key) or os.environ.get(env, "")
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def order_ttl():
+    return cfg_int("order_ttl_min", "ORDER_TTL_MIN", 30) * 60
+
+
+def wipe_after():
+    return cfg_int("wipe_days", "WIPE_DAYS", 14) * 86400
+
+
+# --- rate limit (token bucket per IP, jen RAM — IP se nikam neloguje) --------
+
+class RateLimiter:
+    def __init__(self, capacity=10, refill_per_s=0.5):
+        self.capacity = capacity
+        self.refill = refill_per_s
+        self.buckets = {}
+        self.lock = threading.Lock()
+
+    def allow(self, ip):
+        now = time.monotonic()
+        with self.lock:
+            tokens, last = self.buckets.get(ip, (self.capacity, now))
+            tokens = min(self.capacity, tokens + (now - last) * self.refill)
+            if tokens < 1:
+                self.buckets[ip] = (tokens, now)
+                return False
+            self.buckets[ip] = (tokens - 1, now)
+            if len(self.buckets) > 10000:
+                self.buckets.clear()
+            return True
+
+
+limiter = RateLimiter()
+
+
+# --- byznys logika -----------------------------------------------------------
+
+def apply_settlement(token):
+    """Po zaplacení: přechod paid + vydání digitálních kódů. Idempotentní
+    (mark_paid vrací True jen napoprvé)."""
+    order = store.get_order(token)
+    if not order:
+        return
+    if store.mark_paid(token):
+        vouchers.issue_for_order(token)
+        store.bump_stat("stat_orders", 1)
+        store.bump_stat("stat_sat", order["total_sat"])
+
+
+def check_order_paid(order):
+    """Ověří platbu objednávky u LNbits; při zaplacení settlene a aplikuje.
+    Vrací True, když je objednávka zaplacená (teď či dříve)."""
+    if order["status"] != "new":
+        return order["status"] in ("paid", "shipped", "done")
+    if not order["payment_hash"]:
+        return False
+    try:
+        if not manager.current().is_paid(order["payment_hash"]):
+            return False
+    except payments.PaymentError:
+        return False
+    store.settle_payment(order["payment_hash"])
+    apply_settlement(order["token"])
+    return True
+
+
+def expire_order(order):
+    store.return_stock(order["token"])
+    store.release_voucher(order["token"])
+    store.set_status(order["token"], "expired")
+
+
+def cancel_order(order):
+    store.return_stock(order["token"])
+    store.release_voucher(order["token"])
+    store.set_status(order["token"], "cancelled")
+
+
+def lifecycle_tick():
+    for o in store.expired_candidates(order_ttl()):
+        # poslední šance: mohla být zaplacená se zavřenou záložkou
+        if not check_order_paid(o):
+            expire_order(o)
+    for p in store.pending_payments(86400):
+        o = store.get_order(p["order_token"])
+        if o:
+            check_order_paid(o)
+    for o in store.wipe_candidates(wipe_after()):
+        store.wipe_delivery(o["token"])
+    vouchers.push_redemptions()
+
+
+def lifecycle_loop():
+    while True:
+        time.sleep(LIFECYCLE_INTERVAL)
+        try:
+            lifecycle_tick()
+        except Exception:
+            pass  # smyčka nesmí umřít; nelogujeme (soukromí)
+
+
+# --- HTML --------------------------------------------------------------------
+
+def fmt_sat(n):
+    return format(int(n), ",").replace(",", " ")
+
+
+def page(title, body, extra=""):
+    return """<!doctype html><html lang="cs"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>%s — obchod jednadvacet phone</title>
+<link rel="stylesheet" href="%s">
+<script src="%s"></script>
+<script>
+/* košík: jen localStorage, server o něm neví až do checkoutu */
+function cart(){try{return JSON.parse(localStorage.getItem("obchod_cart")||"[]")}catch(e){return[]}}
+function cartSave(c){localStorage.setItem("obchod_cart",JSON.stringify(c));cartBadge();}
+function cartAdd(id){var c=cart(),f=c.find(function(i){return i.id===id});
+ if(f){f.qty=Math.min(99,f.qty+1)}else{c.push({id:id,qty:1})}cartSave(c);}
+function cartDel(id){cartSave(cart().filter(function(i){return i.id!==id}));}
+function cartQty(id,q){var c=cart(),f=c.find(function(i){return i.id===id});
+ if(f){f.qty=Math.max(1,Math.min(99,q|0));cartSave(c);}}
+function cartBadge(){var n=cart().reduce(function(s,i){return s+i.qty},0);
+ var el=document.getElementById("cartn");if(el)el.textContent=n?(" ("+n+")"):"";}
+document.addEventListener("DOMContentLoaded",cartBadge);
+</script></head>
+<body>
+<header class="site-header"><div class="container">
+<a class="brand" href="%s">jednadvacet <em>phone</em> · obchod</a>
+<nav class="main"><a href="%s">Nabídka</a><a href="%s">Košík<span id="cartn"></span></a></nav>
+</div></header>
+<main class="container">%s</main>
+<footer>žádné účty · platba Lightningem · doručovací údaje mažeme</footer>
+%s</body></html>""" % (
+        html.escape(title), u("/static/style.css"), u("/static/qrcode.min.js"),
+        u("/"), u("/"), u("/kosik"), body, extra)
+
+
+KIND_LABEL = {"physical": "", "voucher": "digitální — dárkový kredit",
+              "days": "digitální — dny privátní sítě"}
+
+STATUS_LABEL = {
+    "new": "čeká na platbu", "paid": "zaplaceno — připravujeme",
+    "shipped": "odesláno", "done": "dokončeno",
+    "cancelled": "zrušeno", "expired": "vypršelo (nezaplaceno)",
+}
+
+
+def katalog_body(products):
+    if not products:
+        return ("<h1>Obchod</h1><p class='muted'>Zrovna nic nenabízíme — "
+                "zkus to později.</p>")
+    cards = ""
+    for p in products:
+        badge = ('<span class="badge">%s</span>' % KIND_LABEL[p["kind"]]
+                 ) if p["kind"] != "physical" else ""
+        soldout = (p["stock"] == 0)
+        btn = ("<button disabled>vyprodáno</button>" if soldout else
+               '<button onclick="cartAdd(%d)">Do košíku</button>' % p["id"])
+        cards += """<div class="card"><h2 style="margin-top:0">%s</h2>%s
+<p class="muted small">%s</p>
+<p><b>%s sat</b></p>%s</div>""" % (
+            html.escape(p["name"]), badge, html.escape(p["descr"]),
+            fmt_sat(p["price_sat"]), btn)
+    return """<section class="hero"><h1>Obchod</h1>
+<p class="lead">Hardware pro vlastní telefonní krabičku a dárky do privátní
+sítě. Platba Lightningem, bez účtů; doručení na výdejní místo — nebo úplně
+anonymně.</p></section>
+<div class="grid">%s</div>""" % cards
+
+
+def kosik_body(products, msg=""):
+    pmap = {p["id"]: {"name": p["name"], "price": p["price_sat"],
+                      "kind": p["kind"]} for p in products}
+    widget = captcha.widget_html(store, "obchodCaptchaPass") \
+        if captcha.enabled(store) else ""
+    banner = '<p class="msg">%s</p>' % html.escape(msg) if msg else ""
+    return """%s<h1>Košík</h1>
+<div id="empty" class="muted" style="display:none">Košík je prázdný —
+<a href="%s">vybrat něco v nabídce</a>.</div>
+<table id="ctab" style="display:none"><thead>
+<tr><th>položka</th><th>ks</th><th>cena</th><th></th></tr></thead>
+<tbody id="crows"></tbody>
+<tfoot><tr><th colspan="2">celkem</th><th id="ctotal"></th><th></th></tr></tfoot>
+</table>
+<form id="cform" method="post" action="%s" style="display:none">
+<input type="hidden" name="items" id="items">
+<input type="hidden" name="captcha_token" id="captcha_token">
+<fieldset><legend>Dárkový kód (nepovinné)</legend>
+<input type="text" name="voucher" placeholder="JDNV-XXXX-XXXX-XXXX"
+ style="max-width:22rem" autocomplete="off"></fieldset>
+<fieldset id="delivery"><legend>Doručení</legend>
+<label><input type="radio" name="delivery" value="point" checked>
+ <b>Výdejní místo</b> (ČR i zahraničí — Zásilkovna/Packeta)</label>
+<label><input type="radio" name="delivery" value="anon">
+ <b>Anonymně</b> (ČR, Balíkovna) — nezadáváš nic, výdejní kód se objeví
+ tady na stránce objednávky</label>
+<label><input type="radio" name="delivery" value="personal">
+ <b>Osobní předání</b> (po domluvě, komunita)</label>
+<div id="d-point">
+<label>ID / adresa výdejního místa</label>
+<input type="text" name="point_id" style="max-width:28rem">
+<label>Jméno pro zásilku (klidně přezdívka)</label>
+<input type="text" name="recip_name" style="max-width:28rem">
+<label>Telefon nebo e-mail pro výdejní kód dopravce</label>
+<input type="text" name="recip_contact" style="max-width:28rem">
+</div>
+<div id="d-anon" style="display:none">
+<label>Výdejna Balíkovny (město / ID výdejny)</label>
+<input type="text" name="anon_point" style="max-width:28rem">
+<p class="small muted">Výdejní kód přijde nám a zobrazí se u objednávky —
+dopravce ani my o tobě nevíme nic.</p>
+</div>
+<label>Poznámka (nepovinné)</label>
+<input type="text" name="note" style="max-width:28rem">
+</fieldset>
+%s
+<button type="submit" id="paybtn">Zaplatit Lightningem</button>
+</form>
+<script>
+var PRODUCTS=%s;
+function render(){var c=cart().filter(function(i){return PRODUCTS[i.id]});
+ cartSave(c);var rows="",total=0,physical=false;
+ c.forEach(function(i){var p=PRODUCTS[i.id];total+=p.price*i.qty;
+  if(p.kind==="physical")physical=true;
+  rows+='<tr><td>'+esc(p.name)+'</td><td><input type="number" min="1" max="99" value="'
+   +i.qty+'" style="width:4.5rem" onchange="cartQty('+i.id+',this.value);render()"></td><td>'
+   +fmt(p.price*i.qty)+' sat</td><td><button type="button" class="small" '
+   +'onclick="cartDel('+i.id+');render()">✕</button></td></tr>';});
+ document.getElementById("crows").innerHTML=rows;
+ document.getElementById("ctotal").textContent=fmt(total)+" sat";
+ document.getElementById("empty").style.display=c.length?"none":"";
+ document.getElementById("ctab").style.display=c.length?"":"none";
+ document.getElementById("cform").style.display=c.length?"":"none";
+ document.getElementById("delivery").style.display=physical?"":"none";
+}
+function esc(s){var d=document.createElement("div");d.textContent=s;return d.innerHTML;}
+function fmt(n){return String(n).replace(/\\B(?=(\\d{3})+(?!\\d))/g," ");}
+document.querySelectorAll('input[name=delivery]').forEach(function(r){
+ r.addEventListener("change",function(){
+  document.getElementById("d-point").style.display=this.value==="point"?"":"none";
+  document.getElementById("d-anon").style.display=this.value==="anon"?"":"none";});});
+var CAPTCHA=%s;
+function obchodCaptchaPass(token){document.getElementById("captcha_token").value=token;}
+document.getElementById("cform").addEventListener("submit",function(e){
+ document.getElementById("items").value=JSON.stringify(cart());
+ if(CAPTCHA && !document.getElementById("captcha_token").value){
+  e.preventDefault();alert("Počkej prosím na dokončení ověření (pár vteřin).");}
+});
+document.addEventListener("DOMContentLoaded",render);
+</script>""" % (banner, u("/"), u("/checkout"), widget,
+                json.dumps(pmap), "true" if captcha.enabled(store) else "false")
+
+
+def order_body(order, items, codes):
+    token = order["token"]
+    st = order["status"]
+    rows = "".join(
+        "<tr><td>%s</td><td>%d×</td><td>%s sat</td></tr>" % (
+            html.escape(i["name"]), i["qty"], fmt_sat(i["price_sat"] * i["qty"]))
+        for i in items)
+    body = """<h1>Objednávka <span class="mono">%s</span></h1>
+<p>Stav: <b>%s</b></p>
+<table><tr><th>položka</th><th></th><th></th></tr>%s
+<tr><th colspan="2">k úhradě</th><th>%s sat</th></tr></table>
+<p class="small muted">Tuhle stránku si ulož — je jediným přístupem
+k objednávce (žádné účty nevedeme).</p>""" % (
+        html.escape(token[:8]), STATUS_LABEL.get(st, st), rows,
+        fmt_sat(order["total_sat"]))
+
+    extra = ""
+    if st == "new":
+        pay = store.get_payment(order["payment_hash"]) if order["payment_hash"] else None
+        if pay:
+            mins = max(0, (order["created_at"] + order_ttl()) - int(time.time())) // 60
+            body += """<h2>Zaplať Lightningem</h2>
+<div id="qr" class="qr"></div>
+<p class="mono" style="word-break:break-all">%s</p>
+<p class="small muted">Objednávka čeká %d min, pak se ruší a sklad
+se uvolní. Po zaplacení se stránka sama obnoví.</p>""" % (
+                html.escape(pay["bolt11"]), mins)
+            extra = """<script>
+new QRCode(document.getElementById("qr"), {text: %s, width: 260, height: 260,
+  correctLevel: QRCode.CorrectLevel.M});
+(function poll(){fetch(%s).then(function(r){return r.json()})
+ .then(function(d){if(d.paid){location.reload()}else{setTimeout(poll,2000)}})
+ .catch(function(){setTimeout(poll,4000)});})();
+</script>""" % (json.dumps("lightning:" + pay["bolt11"]),
+                json.dumps(u("/pay/poll?t=") + token))
+    else:
+        if codes:
+            code_rows = ""
+            for c in codes:
+                if c["kind"] == "days":
+                    note = ('dny privátní sítě — uplatníš na '
+                            '<a href="%s">svém účtu sítě</a>' %
+                            html.escape(NET_DASHBOARD))
+                else:
+                    note = "dárkový kredit obchodu — zadává se v košíku"
+                code_rows += '<tr><td class="mono">%s</td><td>%s</td></tr>' % (
+                    html.escape(c["code"]), note)
+            body += ("<h2>Tvoje kódy</h2><table><tr><th>kód</th><th>k čemu</th>"
+                     "</tr>%s</table>" % code_rows)
+        if order["delivery"] == "anon" and not order["wiped"]:
+            body += ("<h2>Vyzvednutí</h2><p>%s</p>" % (
+                "Výdejní kód: <b class='mono'>%s</b> — vyzvedni na zvolené "
+                "výdejně Balíkovny." % html.escape(order["pickup_code"])
+                if order["pickup_code"] else
+                "Jakmile zásilku podáme, objeví se tady výdejní kód "
+                "Balíkovny (obvykle do pár dnů)."))
+        elif order["delivery"] == "point" and not order["wiped"]:
+            body += ("<p class='small muted'>Doručení na výdejní místo %s — "
+                     "výdejní kód ti pošle dopravce.</p>"
+                     % html.escape(order["point_id"] or ""))
+    return page("Objednávka", body, extra)
+
+
+# --- HTTP handler ------------------------------------------------------------
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "Obchod"
+    protocol_version = "HTTP/1.1"
+    _body = None
+
+    def log_message(self, fmt, *args):
+        pass  # nic — ani IP, ani cesty s tokeny
+
+    def _send(self, status, body, ctype="text/html; charset=utf-8", extra=None):
+        data = body.encode() if isinstance(body, str) else body
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _json(self, obj, status=200):
+        self._send(status, json.dumps(obj), "application/json")
+
+    def _redirect(self, target):
+        self._send(303, "", extra={"Location": target})
+
+    def _read_body(self):
+        if self._body is None:
+            length = int(self.headers.get("Content-Length") or 0)
+            self._body = self.rfile.read(min(length, 65536)) if length else b""
+        return self._body
+
+    def _form(self):
+        raw = self._read_body().decode(errors="replace")
+        return {k: v[0] for k, v in urllib.parse.parse_qs(raw).items()}
+
+    def _client_ip(self):
+        real = (self.headers.get("X-Real-IP") or "").strip()
+        return real or self.client_address[0]
+
+    def _path(self):
+        """Cesta bez BASE_PATH prefixu (nginx prefix nestrhává)."""
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        if BASE and path.startswith(BASE):
+            path = path[len(BASE):] or "/"
+        return path, urllib.parse.parse_qs(parsed.query)
+
+    def do_GET(self):
+        self._body = b""
+        path, qs = self._path()
+        if path == "/":
+            return self._send(200, page("Nabídka",
+                                        katalog_body(store.list_products())))
+        if path == "/kosik":
+            return self._send(200, page("Košík",
+                                        kosik_body(store.list_products())))
+        if path.startswith("/o/"):
+            return self.get_order(path[3:])
+        if path == "/pay/poll":
+            return self.get_pay_poll(qs)
+        if path.startswith("/static/"):
+            return self.get_static(path)
+        self._send(404, page("404", "<h1>404</h1>"))
+
+    def do_POST(self):
+        self._body = None
+        path, _qs = self._path()
+        if path == "/checkout":
+            if not limiter.allow(self._client_ip()):
+                self._read_body()
+                return self._send(429, page("Zpomal",
+                    "<h1>Moc požadavků</h1><p>Zkus to za chvíli.</p>"))
+            return self.post_checkout(self._form())
+        self._read_body()
+        self._send(404, page("404", "<h1>404</h1>"))
+
+    # -- stránky --
+
+    def get_order(self, token):
+        token = "".join(c for c in token if c.isalnum() or c in "-_")
+        order = store.get_order(token)
+        if not order:
+            return self._send(404, page("404", "<h1>Objednávka nenalezena</h1>"))
+        if order["status"] == "new":
+            check_order_paid(order)
+            order = store.get_order(token)
+        codes = store.vouchers_for_order(token)
+        self._send(200, order_body(order, store.get_items(token), codes))
+
+    def get_pay_poll(self, qs):
+        token = (qs.get("t") or [""])[0]
+        order = store.get_order(token)
+        if not order:
+            return self._json({"paid": False}, 404)
+        self._json({"paid": check_order_paid(order)})
+
+    def get_static(self, path):
+        name = os.path.basename(path)
+        fpath = os.path.join(os.path.dirname(__file__), "static", name)
+        ctypes = {".css": "text/css", ".js": "application/javascript"}
+        ext = os.path.splitext(name)[1]
+        if ext not in ctypes or not os.path.isfile(fpath):
+            return self._send(404, "not found", "text/plain")
+        with open(fpath, "rb") as f:
+            self._send(200, f.read(), ctypes[ext],
+                       {"Cache-Control": "max-age=3600"})
+
+    # -- checkout --
+
+    def post_checkout(self, form):
+        # 1. položky (max 20, qty 1..99, jen aktivní produkty)
+        try:
+            raw = json.loads(form.get("items", ""))
+            assert isinstance(raw, list) and 0 < len(raw) <= 20
+            wanted = []
+            seen = set()
+            for it in raw:
+                pid, qty = int(it["id"]), int(it["qty"])
+                assert 1 <= qty <= 99 and pid not in seen
+                seen.add(pid)
+                wanted.append((pid, qty))
+        except (ValueError, TypeError, KeyError, AssertionError):
+            return self._kosik_err("Neplatný obsah košíku.")
+        pairs = []
+        for pid, qty in wanted:
+            prod = store.get_product(pid)
+            if not prod or not prod["active"]:
+                return self._kosik_err("Některý produkt už není v nabídce — "
+                                       "zkontroluj košík.")
+            pairs.append((prod, qty))
+
+        # 2. doručení (jen když je v košíku fyzická položka)
+        physical = any(p["kind"] == "physical" for p, _q in pairs)
+        delivery = point_id = recip_name = recip_contact = None
+        if physical:
+            delivery = form.get("delivery", "")
+            if delivery == "point":
+                point_id = form.get("point_id", "").strip()[:200]
+                recip_name = form.get("recip_name", "").strip()[:100]
+                recip_contact = form.get("recip_contact", "").strip()[:100]
+                if not (point_id and recip_name and recip_contact):
+                    return self._kosik_err("Doplň výdejní místo, jméno a "
+                                           "kontakt pro dopravce.")
+            elif delivery == "anon":
+                point_id = form.get("anon_point", "").strip()[:200]
+                if not point_id:
+                    return self._kosik_err("Vyber výdejnu Balíkovny.")
+            elif delivery == "personal":
+                pass
+            else:
+                return self._kosik_err("Vyber způsob doručení.")
+        note = form.get("note", "").strip()[:500] or None
+
+        # 3. captcha (ekonomická bariéra před vystavením invoice)
+        if not captcha.verify(store, form.get("captcha_token", "")):
+            return self._kosik_err("Ověření prohlížeče neprošlo — zkus to znovu.")
+
+        # 4. ceny VÝHRADNĚ z DB
+        total = sum(p["price_sat"] * q for p, q in pairs)
+        token = secrets.token_urlsafe(16)
+
+        # 5. dárkový kód (rezervace — při jakékoli další chybě se vrací)
+        discount = 0
+        if form.get("voucher", "").strip():
+            discount, err = vouchers.voucher_discount(
+                form["voucher"], total, token)
+            if err:
+                return self._kosik_err("Dárkový kód: %s" % err)
+
+        # 6. sklad (atomicky vše, nebo nic)
+        ok, err = store.reserve_stock(pairs)
+        if not ok:
+            store.release_voucher(token)
+            return self._kosik_err(err)
+
+        to_pay = total - discount
+        store.create_order(token, to_pay, delivery, point_id, recip_name,
+                           recip_contact, note)
+        for prod, qty in pairs:
+            store.add_item(token, prod, qty)
+
+        # 7. plně pokryto kreditem → rovnou zaplaceno, žádná invoice
+        if to_pay == 0:
+            apply_settlement(token)
+            return self._redirect(u("/o/") + token)
+
+        # 8. LN invoice
+        try:
+            inv = manager.current().create_invoice(
+                to_pay, "obchod %s" % token[:8])
+        except payments.PaymentError:
+            store.return_stock(token)
+            store.release_voucher(token)
+            store.set_status(token, "cancelled")
+            return self._kosik_err("Platby jsou dočasně nedostupné — "
+                                   "zkus to prosím později.")
+        store.add_payment(inv.payment_hash, token, to_pay, inv.bolt11)
+        store.set_order_payment(token, inv.payment_hash)
+        self._redirect(u("/o/") + token)
+
+    def _kosik_err(self, msg):
+        self._send(400, page("Košík", kosik_body(store.list_products(), msg)))
+
+
+# --- start -------------------------------------------------------------------
+
+SEED_PRODUCTS = (
+    # (name, descr, price_sat, kind, days, stock)  — vše NEaktivní, ceny
+    # jsou placeholder; zapíná a ladí se v admin UI.
+    ("Krabička jednadvacet phone", "Kompletní set: mini-server s nahraným "
+     "systémem + USB modem. Zapojíš SIM a jedeš.", 2_500_000, "physical", 0, 0),
+    ("USB LTE modem", "Kompatibilní modem pro vlastní stavbu (návod na webu).",
+     900_000, "physical", 0, 0),
+    ("Dárkový kredit obchodu", "Kód na nákup čehokoli tady — dárek bez "
+     "vyzvídání adresy.", 100_000, "voucher", 0, -1),
+    ("Dárkové dny privátní sítě (30)", "Kód na 30 dní privátní sítě — "
+     "obdarovaný ho uplatní na svém účtu.", 12_000, "days", 30, -1),
+)
+
+
+def seed_products():
+    if store.list_products(active_only=False):
+        return
+    for name, descr, price, kind, days, stock in SEED_PRODUCTS:
+        store.add_product(name, descr, price, kind, days, stock, active=0)
+
+
+def main():
+    store.connect()
+    seed_products()
+    import admin
+    admin.start(manager=manager, cancel_order=cancel_order)
+    threading.Thread(target=lifecycle_loop, daemon=True).start()
+    server = ThreadingHTTPServer(("0.0.0.0", WEB_PORT), Handler)
+    print("obchod na portu %d (BASE_PATH=%r)" % (WEB_PORT, BASE), flush=True)
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

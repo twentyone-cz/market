@@ -1,0 +1,26 @@
+# Dev override: lokální LNbits s FakeWallet — celý platební flow bez
+# reálných peněz. Použití:
+#   docker compose -f docker-compose.yml -f docker-compose.lnbits.yml up -d
+# V adminu (:8094) pak nastav LNbits URL http://lnbits:5000 + invoice key
+# peněženky vytvořené v http://localhost:5000.
+
+services:
+  obchod:
+    environment:
+      LNBITS_URL: http://lnbits:5000
+
+  lnbits:
+    image: lnbits/lnbits:1.4.1
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      LNBITS_BACKEND_WALLET_CLASS: FakeWallet
+      LNBITS_ADMIN_UI: "true"
+      HOST: 0.0.0.0
+      PORT: "5000"
+    volumes:
+      - lnbits-data:/app/data
+
+volumes:
+  lnbits-data:
