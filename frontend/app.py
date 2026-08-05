@@ -30,6 +30,11 @@ WEB_PORT = int(os.environ.get("WEB_PORT", "8093"))
 BASE = os.environ.get("BASE_PATH", "").rstrip("/")
 LIFECYCLE_INTERVAL = int(os.environ.get("LIFECYCLE_INTERVAL", "60"))
 NET_DASHBOARD = os.environ.get("NET_DASHBOARD_URL", "https://phone.twentyone.cz/app")
+# Odkazy na zbytek webu (obchod běží pod stejnou doménou → cesty od kořene;
+# pro samostatný běh jde přepsat na absolutní URL přes env).
+SITE_HOME = os.environ.get("SITE_HOME_URL", "/")
+SITE_DOCS = os.environ.get("SITE_DOCS_URL", "/instalace")
+SITE_ACCOUNT = os.environ.get("SITE_ACCOUNT_URL", "/app")
 
 manager = payments.PaymentManager(store)
 
@@ -158,6 +163,24 @@ def page(title, body, extra=""):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>%s — obchod jednadvacet phone</title>
 <link rel="stylesheet" href="%s">
+<style>
+/* Doplňky ke sdílenému stylu: formuláře (style.css dává inputům width:100%%,
+   což u radiobuttonů rozhází layout) */
+fieldset { border:1px solid var(--line); border-radius:var(--radius-sm);
+  padding:.4rem 1rem 1rem; margin:1.2rem 0; background:var(--surface); }
+legend { color:var(--muted); font-size:.85rem; padding:0 .35rem; }
+label { display:block; margin:.8rem 0 .25rem; color:var(--muted); font-size:.85rem; }
+input[type=radio], input[type=checkbox] { width:auto; margin:0; }
+label.opt { display:flex; align-items:flex-start; gap:.6rem; margin:.5rem 0;
+  padding:.65rem .8rem; border:1px solid var(--line); border-radius:var(--radius-sm);
+  color:var(--fg); font-size:.95rem; cursor:pointer; }
+label.opt:hover { border-color:var(--accent); }
+label.opt input { margin-top:.3rem; flex:none; }
+label.opt b { display:block; }
+label.opt span { display:block; color:var(--muted); font-size:.85rem; }
+.sub { margin:.4rem 0 0; padding:.2rem 0 0 .2rem; }
+.sub input[type=text] { max-width:28rem; }
+</style>
 <script src="%s"></script>
 <script>
 /* košík: jen localStorage, server o něm neví až do checkoutu */
@@ -174,14 +197,17 @@ document.addEventListener("DOMContentLoaded",cartBadge);
 </script></head>
 <body>
 <header class="site-header"><div class="container">
-<a class="brand" href="%s">jednadvacet <em>phone</em> · obchod</a>
-<nav class="main"><a href="%s">Nabídka</a><a href="%s">Košík<span id="cartn"></span></a></nav>
+<a class="brand" href="%s">jednadvacet <em>phone</em></a>
+<nav class="main"><a href="%s">Nabídka</a><a href="%s">Košík<span id="cartn"></span></a>
+<a href="%s">Návod</a><a href="%s">Můj účet</a></nav>
 </div></header>
 <main class="container">%s</main>
-<footer>žádné účty · platba Lightningem · doručovací údaje mažeme</footer>
+<footer><a href="%s">jednadvacet phone</a> · <a href="%s">návod</a> ·
+žádné účty · platba Lightningem · doručovací údaje mažeme</footer>
 %s</body></html>""" % (
         html.escape(title), u("/static/style.css"), u("/static/qrcode.min.js"),
-        u("/"), u("/"), u("/kosik"), body, extra)
+        SITE_HOME, u("/"), u("/kosik"), SITE_DOCS, SITE_ACCOUNT, body,
+        SITE_HOME, SITE_DOCS, extra)
 
 
 KIND_LABEL = {"physical": "", "voucher": "digitální — dárkový kredit",
@@ -238,29 +264,30 @@ def kosik_body(products, msg=""):
 <input type="text" name="voucher" placeholder="JDNV-XXXX-XXXX-XXXX"
  style="max-width:22rem" autocomplete="off"></fieldset>
 <fieldset id="delivery"><legend>Doručení</legend>
-<label><input type="radio" name="delivery" value="point" checked>
- <b>Výdejní místo</b> (ČR i zahraničí — Zásilkovna/Packeta)</label>
-<label><input type="radio" name="delivery" value="anon">
- <b>Anonymně</b> (ČR, Balíkovna) — nezadáváš nic, výdejní kód se objeví
- tady na stránce objednávky</label>
-<label><input type="radio" name="delivery" value="personal">
- <b>Osobní předání</b> (po domluvě, komunita)</label>
-<div id="d-point">
-<label>ID / adresa výdejního místa</label>
-<input type="text" name="point_id" style="max-width:28rem">
+<label class="opt"><input type="radio" name="delivery" value="point" checked>
+<span><b>Výdejní místo</b>ČR i zahraničí (Zásilkovna/Packeta). Dopravce
+potřebuje jméno a kontakt — po doručení je smažeme.</span></label>
+<label class="opt"><input type="radio" name="delivery" value="anon">
+<span><b>Anonymně</b>ČR, Balíkovna. Nezadáváš o sobě nic; výdejní kód se
+objeví tady na stránce objednávky.</span></label>
+<label class="opt"><input type="radio" name="delivery" value="personal">
+<span><b>Osobní předání</b>Po domluvě (komunita, meetupy).</span></label>
+<div id="d-point" class="sub">
+<label>ID nebo adresa výdejního místa</label>
+<input type="text" name="point_id" placeholder="např. Z-BOX Brno, Veveří 1">
 <label>Jméno pro zásilku (klidně přezdívka)</label>
-<input type="text" name="recip_name" style="max-width:28rem">
+<input type="text" name="recip_name">
 <label>Telefon nebo e-mail pro výdejní kód dopravce</label>
-<input type="text" name="recip_contact" style="max-width:28rem">
+<input type="text" name="recip_contact">
 </div>
-<div id="d-anon" style="display:none">
+<div id="d-anon" class="sub" style="display:none">
 <label>Výdejna Balíkovny (město / ID výdejny)</label>
-<input type="text" name="anon_point" style="max-width:28rem">
+<input type="text" name="anon_point" placeholder="např. Balíkovna Brno – Lidická">
 <p class="small muted">Výdejní kód přijde nám a zobrazí se u objednávky —
 dopravce ani my o tobě nevíme nic.</p>
 </div>
 <label>Poznámka (nepovinné)</label>
-<input type="text" name="note" style="max-width:28rem">
+<input type="text" name="note" class="sub" style="max-width:28rem">
 </fieldset>
 %s
 <button type="submit" id="paybtn">Zaplatit Lightningem</button>
