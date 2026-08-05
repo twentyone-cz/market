@@ -213,6 +213,23 @@ document.addEventListener("DOMContentLoaded",cartBadge);
 KIND_LABEL = {"physical": "", "voucher": "digitální — dárkový kredit",
               "days": "digitální — dny privátní sítě"}
 
+# Dopravci, u kterých podmínky výslovně připouštějí podání cizí osobou na kód
+# (Balíkovna: „Poskytovatel neověřuje totožnost podavatele"; PPL: „SMART PIN
+# je přenositelný"). Packeta/DPD schválně NE — obsluha tam tiskne štítek se
+# jménem zákazníka, takže by model ztratil smysl.
+CARRIERS = {
+    "balikovna": ("Balíkovna (Česká pošta)", "podací kód (8 číslic)",
+                  "AlzaBox / Penguin Box, kód platí 7 dní"),
+    "ppl": ("PPL Balík pro Tebe", "SMART PIN",
+            "ParcelBox, PIN platí 15 dní, hodnota do 5 000 Kč"),
+}
+
+
+def normalize_ship_code(raw):
+    """Podací kód: 6–14 alfanumerických znaků, bez mezer a pomlček."""
+    code = "".join(c for c in raw.upper() if c.isalnum())
+    return code if 6 <= len(code) <= 14 else ""
+
 STATUS_LABEL = {
     "new": "čeká na platbu", "paid": "zaplaceno — připravujeme",
     "shipped": "odesláno", "done": "dokončeno",
@@ -264,27 +281,30 @@ def kosik_body(products, msg=""):
 <input type="text" name="voucher" placeholder="JDNV-XXXX-XXXX-XXXX"
  style="max-width:22rem" autocomplete="off"></fieldset>
 <fieldset id="delivery"><legend>Doručení</legend>
-<label class="opt"><input type="radio" name="delivery" value="point" checked>
-<span><b>Výdejní místo</b>ČR i zahraničí (Zásilkovna/Packeta). Dopravce
-potřebuje jméno a kontakt — po doručení je smažeme.</span></label>
-<label class="opt"><input type="radio" name="delivery" value="anon">
-<span><b>Anonymně</b>ČR, Balíkovna. Nezadáváš o sobě nic; výdejní kód se
-objeví tady na stránce objednávky.</span></label>
+<label class="opt"><input type="radio" name="delivery" value="code" checked>
+<span><b>Přepravu si objednáš sám</b>Zaplatíš ji u dopravce, nám pošleš jen
+podací kód — nedozvíme se o tobě vůbec nic (ani jméno, ani kam to jde).</span></label>
 <label class="opt"><input type="radio" name="delivery" value="personal">
 <span><b>Osobní předání</b>Po domluvě (komunita, meetupy).</span></label>
-<div id="d-point" class="sub">
-<label>ID nebo adresa výdejního místa</label>
-<input type="text" name="point_id" placeholder="např. Z-BOX Brno, Veveří 1">
-<label>Jméno pro zásilku (klidně přezdívka)</label>
-<input type="text" name="recip_name">
-<label>Telefon nebo e-mail pro výdejní kód dopravce</label>
-<input type="text" name="recip_contact">
+<div id="d-code" class="sub">
+<label>Dopravce</label>
+<select name="carrier" style="max-width:28rem">
+<option value="balikovna">Balíkovna (Česká pošta) — jen ČR</option>
+<option value="ppl">PPL Balík pro Tebe — ČR i EU</option>
+</select>
+<label>Podací kód (můžeš doplnit i později na stránce objednávky)</label>
+<input type="text" name="ship_code" placeholder="8 číslic / SMART PIN"
+ autocomplete="off">
+<div class="small muted">
+<p><b>Jak na to:</b> u dopravce si objednej a zaplať přepravu, jako
+<b>odesílatele i adresáta vyplň sebe</b> a vyber výdejní box. Dostaneš
+podací kód — ten nám sem vlož. Napíšeme ho na krabici a vložíme do boxu;
+potvrzení o podání a sledování přijde na tvůj e-mail.</p>
+<p><b>Balíkovna:</b> podání do AlzaBoxu / Penguin Boxu, kód platí 7 dní,
+do 15 kg. <b>PPL:</b> podání do ParcelBoxu, SMART PIN platí 15 dní,
+hodnota zásilky do 5 000 Kč. Přepravu neplatíme ani nereklamujeme my —
+smlouvu s dopravcem máš ty (proto o tobě nic nevíme).</p>
 </div>
-<div id="d-anon" class="sub" style="display:none">
-<label>Výdejna Balíkovny (město / ID výdejny)</label>
-<input type="text" name="anon_point" placeholder="např. Balíkovna Brno – Lidická">
-<p class="small muted">Výdejní kód přijde nám a zobrazí se u objednávky —
-dopravce ani my o tobě nevíme nic.</p>
 </div>
 <label>Poznámka (nepovinné)</label>
 <input type="text" name="note" class="sub" style="max-width:28rem">
@@ -313,8 +333,7 @@ function esc(s){var d=document.createElement("div");d.textContent=s;return d.inn
 function fmt(n){return String(n).replace(/\\B(?=(\\d{3})+(?!\\d))/g," ");}
 document.querySelectorAll('input[name=delivery]').forEach(function(r){
  r.addEventListener("change",function(){
-  document.getElementById("d-point").style.display=this.value==="point"?"":"none";
-  document.getElementById("d-anon").style.display=this.value==="anon"?"":"none";});});
+  document.getElementById("d-code").style.display=this.value==="code"?"":"none";});});
 var CAPTCHA=%s;
 function obchodCaptchaPass(token){document.getElementById("captcha_token").value=token;}
 document.getElementById("cform").addEventListener("submit",function(e){
@@ -376,17 +395,33 @@ new QRCode(document.getElementById("qr"), {text: %s, width: 260, height: 260,
                     html.escape(c["code"]), note)
             body += ("<h2>Tvoje kódy</h2><table><tr><th>kód</th><th>k čemu</th>"
                      "</tr>%s</table>" % code_rows)
-        if order["delivery"] == "anon" and not order["wiped"]:
-            body += ("<h2>Vyzvednutí</h2><p>%s</p>" % (
-                "Výdejní kód: <b class='mono'>%s</b> — vyzvedni na zvolené "
-                "výdejně Balíkovny." % html.escape(order["pickup_code"])
-                if order["pickup_code"] else
-                "Jakmile zásilku podáme, objeví se tady výdejní kód "
-                "Balíkovny (obvykle do pár dnů)."))
-        elif order["delivery"] == "point" and not order["wiped"]:
-            body += ("<p class='small muted'>Doručení na výdejní místo %s — "
-                     "výdejní kód ti pošle dopravce.</p>"
-                     % html.escape(order["point_id"] or ""))
+        if order["delivery"] == "code" and not order["wiped"]:
+            name, code_label, note = CARRIERS.get(
+                order["carrier"] or "", ("dopravce", "podací kód", ""))
+            if order["ship_code"]:
+                body += ("<h2>Doprava</h2><p>%s — %s: <b class='mono'>%s</b>."
+                         " Kód napíšeme na krabici a podáme ji; potvrzení ti "
+                         "přijde od dopravce na e-mail.</p>" % (
+                             html.escape(name), html.escape(code_label),
+                             html.escape(order["ship_code"])))
+            elif order["status"] in ("paid", "shipped"):
+                body += ("""<h2>Pošli nám podací kód</h2>
+<p>U dopravce <b>%s</b> si objednej a zaplať přepravu (jako odesílatele
+i adresáta vyplň sebe, vyber výdejní box) — %s. Pak sem vlož %s:</p>
+<form class="inline" method="post" action="%s">
+<input type="text" name="ship_code" placeholder="%s" autocomplete="off"
+ style="max-width:16rem" required>
+<button type="submit">Uložit kód</button></form>
+<p class="small muted">Bez kódu zásilku nemůžeme podat — a víc od tebe
+nepotřebujeme.</p>""" % (
+                    html.escape(name), html.escape(note),
+                    html.escape(code_label), u("/o/%s/kod" % token),
+                    html.escape(code_label)))
+        elif order["delivery"] in ("point", "anon") and not order["wiped"]:
+            # legacy objednávky ze starého modelu doručení
+            body += ("<p class='small muted'>Doručení: %s %s</p>" % (
+                html.escape(order["delivery"]),
+                html.escape(order["point_id"] or "")))
     return page("Objednávka", body, extra)
 
 
@@ -466,6 +501,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(429, page("Zpomal",
                     "<h1>Moc požadavků</h1><p>Zkus to za chvíli.</p>"))
             return self.post_checkout(self._form())
+        if path.startswith("/o/") and path.endswith("/kod"):
+            return self.post_ship_code(path[3:-4], self._form())
         self._read_body()
         self._send(404, page("404", "<h1>404</h1>"))
 
@@ -481,6 +518,25 @@ class Handler(BaseHTTPRequestHandler):
             order = store.get_order(token)
         codes = store.vouchers_for_order(token)
         self._send(200, order_body(order, store.get_items(token), codes))
+
+    def post_ship_code(self, token, form):
+        """Zákazník doplní podací kód po zaplacení (dokud není odesláno)."""
+        token = "".join(c for c in token if c.isalnum() or c in "-_")
+        order = store.get_order(token)
+        if not order or order["delivery"] != "code":
+            return self._send(404, page("404", "<h1>Objednávka nenalezena</h1>"))
+        if order["status"] not in ("paid", "shipped"):
+            return self._send(400, page("Objednávka",
+                "<h1>Kód zatím nejde uložit</h1><p>Objednávka musí být "
+                "nejdřív zaplacená.</p>"))
+        code = normalize_ship_code(form.get("ship_code", ""))
+        if not code:
+            return self._send(400, page("Objednávka",
+                "<h1>Neplatný kód</h1><p>Podací kód má 6–14 znaků "
+                "(číslice/písmena). <a href=\"%s\">Zpět na objednávku</a></p>"
+                % u("/o/" + token)))
+        store.set_ship_code(token, code)
+        self._redirect(u("/o/" + token))
 
     def get_pay_poll(self, qs):
         token = (qs.get("t") or [""])[0]
@@ -524,25 +580,22 @@ class Handler(BaseHTTPRequestHandler):
                                        "zkontroluj košík.")
             pairs.append((prod, qty))
 
-        # 2. doručení (jen když je v košíku fyzická položka)
+        # 2. doručení (jen když je v košíku fyzická položka). Přepravu si
+        # objednává zákazník sám — od nás nechce nic než napsat kód na krabici,
+        # takže o něm neukládáme žádný osobní údaj.
         physical = any(p["kind"] == "physical" for p, _q in pairs)
-        delivery = point_id = recip_name = recip_contact = None
+        delivery = carrier = ship_code = None
         if physical:
             delivery = form.get("delivery", "")
-            if delivery == "point":
-                point_id = form.get("point_id", "").strip()[:200]
-                recip_name = form.get("recip_name", "").strip()[:100]
-                recip_contact = form.get("recip_contact", "").strip()[:100]
-                if not (point_id and recip_name and recip_contact):
-                    return self._kosik_err("Doplň výdejní místo, jméno a "
-                                           "kontakt pro dopravce.")
-            elif delivery == "anon":
-                point_id = form.get("anon_point", "").strip()[:200]
-                if not point_id:
-                    return self._kosik_err("Vyber výdejnu Balíkovny.")
-            elif delivery == "personal":
-                pass
-            else:
+            if delivery == "code":
+                carrier = form.get("carrier", "")
+                if carrier not in CARRIERS:
+                    return self._kosik_err("Vyber dopravce.")
+                ship_code = normalize_ship_code(form.get("ship_code", ""))
+                if form.get("ship_code", "").strip() and not ship_code:
+                    return self._kosik_err("Podací kód vypadá divně — zkontroluj "
+                                           "ho, nebo ho doplň později u objednávky.")
+            elif delivery != "personal":
                 return self._kosik_err("Vyber způsob doručení.")
         note = form.get("note", "").strip()[:500] or None
 
@@ -569,8 +622,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._kosik_err(err)
 
         to_pay = total - discount
-        store.create_order(token, to_pay, delivery, point_id, recip_name,
-                           recip_contact, note)
+        store.create_order(token, to_pay, delivery, carrier, ship_code, note)
         for prod, qty in pairs:
             store.add_item(token, prod, qty)
 

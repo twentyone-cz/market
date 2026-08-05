@@ -63,8 +63,7 @@ def checkout_form(items, **extra):
     return form
 
 
-DELIV = dict(delivery="point", point_id="Z-BOX 123", recip_name="Pepa",
-             recip_contact="p@x.cz")
+DELIV = dict(delivery="code", carrier="balikovna")
 
 
 class WebTests(unittest.TestCase):
@@ -119,11 +118,25 @@ class WebTests(unittest.TestCase):
             [{"id": self.box["id"], "qty": 1}]))
         self.assertEqual(st, 400)
         self.assertIn("doručení", body.lower())
-        # point bez kontaktu
-        st, _h, _b = self.c.post("/checkout", checkout_form(
-            [{"id": self.box["id"], "qty": 1}], delivery="point",
-            point_id="Z1"))
+        # neznámý dopravce (Packeta/DPD schválně nenabízíme)
+        st, _h, body = self.c.post("/checkout", checkout_form(
+            [{"id": self.box["id"], "qty": 1}], delivery="code",
+            carrier="packeta"))
         self.assertEqual(st, 400)
+        self.assertIn("dopravce", body.lower())
+        # nesmyslný podací kód
+        st, _h, _b = self.c.post("/checkout", checkout_form(
+            [{"id": self.box["id"], "qty": 1}], delivery="code",
+            carrier="ppl", ship_code="x"))
+        self.assertEqual(st, 400)
+
+    def test_personal_delivery_needs_nothing(self):
+        st, h, _b = self.c.post("/checkout", checkout_form(
+            [{"id": self.box["id"], "qty": 1}], delivery="personal"))
+        self.assertEqual(st, 303)
+        order = store.get_order(self._order_token(h["Location"]))
+        self.assertEqual(order["delivery"], "personal")
+        self.assertIsNone(order["carrier"])
 
     def test_digital_only_needs_no_delivery(self):
         st, h, _b = self.c.post("/checkout", checkout_form(
@@ -215,20 +228,40 @@ class WebTests(unittest.TestCase):
         token = self._order_token(h["Location"])
         self.assertEqual(store.get_order(token)["total_sat"], 600)  # 1000-400
 
-    def test_anon_delivery_and_pickup_code(self):
+    def test_ship_code_at_checkout(self):
         st, h, _b = self.c.post("/checkout", checkout_form(
-            [{"id": self.box["id"], "qty": 1}], delivery="anon",
-            anon_point="Balíkovna Brno"))
+            [{"id": self.box["id"], "qty": 1}], delivery="code",
+            carrier="balikovna", ship_code="1234-5678"))
         self.assertEqual(st, 303)
+        order = store.get_order(self._order_token(h["Location"]))
+        self.assertEqual(order["ship_code"], "12345678")   # normalizováno
+        self.assertEqual(order["carrier"], "balikovna")
+
+    def test_ship_code_added_later(self):
+        st, h, _b = self.c.post("/checkout", checkout_form(
+            [{"id": self.box["id"], "qty": 1}], **DELIV))
         token = self._order_token(h["Location"])
+        # před zaplacením kód nejde uložit
+        st, _h, _b = self.c.post("/o/%s/kod" % token, {"ship_code": "12345678"})
+        self.assertEqual(st, 400)
         app.manager.backend.pay(store.get_order(token)["payment_hash"])
         self.c.get("/pay/poll?t=" + token)
+        # zaplaceno → stránka vyzve k zadání kódu
         _st, _h, body = self.c.get("/o/" + token)
-        self.assertIn("výdejní kód", body.lower())
-        store.set_pickup_code(token, "123 456")
-        store.set_status(token, "shipped")
+        self.assertIn("podací kód", body.lower())
+        # neplatný kód
+        st, _h, _b = self.c.post("/o/%s/kod" % token, {"ship_code": "abc"})
+        self.assertEqual(st, 400)
+        # platný kód
+        st, _h, _b = self.c.post("/o/%s/kod" % token, {"ship_code": "8765 4321"})
+        self.assertEqual(st, 303)
+        self.assertEqual(store.get_order(token)["ship_code"], "87654321")
         _st, _h, body = self.c.get("/o/" + token)
-        self.assertIn("123 456", body)
+        self.assertIn("87654321", body)
+
+    def test_ship_code_unknown_order(self):
+        st, _h, _b = self.c.post("/o/neexistuje/kod", {"ship_code": "12345678"})
+        self.assertEqual(st, 404)
 
     # -- lifecycle --
 
@@ -337,16 +370,15 @@ class AdminTests(unittest.TestCase):
         self.assertEqual(st, 200)
 
     def test_order_actions(self):
-        store.create_order("tok", 100, "anon", "Balíkovna", None, None, None)
+        store.create_order("tok", 100, "code", "balikovna", "12345678")
         store.add_item("tok", self.box, 1)
         store.mark_paid("tok")
-        st, _h, _b = self.c.post("/order", {"token": "tok", "action": "shipped",
-                                            "pickup_code": "987654"},
+        st, _h, _b = self.c.post("/order", {"token": "tok", "action": "shipped"},
                                  headers=self.auth)
         self.assertEqual(st, 303)
         row = store.get_order("tok")
-        self.assertEqual((row["status"], row["pickup_code"]),
-                         ("shipped", "987654"))
+        self.assertEqual((row["status"], row["ship_code"]),
+                         ("shipped", "12345678"))
         self.c.post("/order", {"token": "tok", "action": "done"},
                     headers=self.auth)
         self.assertEqual(store.get_order("tok")["status"], "done")
@@ -354,10 +386,21 @@ class AdminTests(unittest.TestCase):
                     headers=self.auth)
         self.assertEqual(store.get_order("tok")["wiped"], 1)
 
+    def test_shipped_requires_customer_code(self):
+        store.create_order("bezkodu", 100, "code", "balikovna")
+        store.add_item("bezkodu", self.box, 1)
+        store.mark_paid("bezkodu")
+        st, _h, body = self.c.post("/order", {"token": "bezkodu",
+                                              "action": "shipped"},
+                                   headers=self.auth)
+        self.assertEqual(st, 400)
+        self.assertIn("podací kód", body)
+        self.assertEqual(store.get_order("bezkodu")["status"], "paid")
+
     def test_order_cancel_returns_stock(self):
         ok, _ = store.reserve_stock([(self.box, 2)])
         self.assertTrue(ok)
-        store.create_order("tok", 2000, "point", "Z1", "A", "B", None)
+        store.create_order("tok", 2000, "code", "balikovna", "11223344")
         store.add_item("tok", self.box, 2)
         self.c.post("/order", {"token": "tok", "action": "cancel"},
                     headers=self.auth)

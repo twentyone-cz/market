@@ -10,7 +10,7 @@ def paid_voucher_order(token="src", value=500, kind="voucher", days=0, qty=1):
     pid = store.add_product("V", "", value, kind=kind, days=days,
                             stock=-1, active=1)
     prod = store.get_product(pid)
-    store.create_order(token, value * qty, None, None, None, None, None)
+    store.create_order(token, value * qty, None)
     store.add_item(token, prod, qty)
     store.mark_paid(token)
     vouchers.issue_for_order(token)
@@ -45,7 +45,7 @@ class Issue(unittest.TestCase):
 
     def test_physical_items_no_codes(self):
         pid = store.add_product("H", "", 100, stock=1, active=1)
-        store.create_order("o1", 100, "point", "x", "y", "z", None)
+        store.create_order("o1", 100, "code", "balikovna")
         store.add_item("o1", store.get_product(pid), 1)
         store.mark_paid("o1")
         vouchers.issue_for_order("o1")
@@ -76,7 +76,7 @@ class Discount(unittest.TestCase):
 
     def test_unpaid_source_rejected(self):
         pid = store.add_product("V", "", 500, kind="voucher", stock=-1, active=1)
-        store.create_order("src", 500, None, None, None, None, None)
+        store.create_order("src", 500, None)
         store.add_item("src", store.get_product(pid), 1)
         # NEzaplaceno, ale kód uměle existuje
         store.add_voucher("JDNV-AAAA-BBBB-CCCC", "voucher", 500, 0, "src")

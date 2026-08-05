@@ -36,7 +36,7 @@ class ProductsStock(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(store.get_product(a["id"])["stock"], 0)
         self.assertEqual(store.get_product(d["id"])["stock"], -1)
-        store.create_order("tok1", 70, None, None, None, None, None)
+        store.create_order("tok1", 70, None)
         store.add_item("tok1", a, 2)
         store.add_item("tok1", d, 5)
         store.return_stock("tok1")
@@ -54,7 +54,7 @@ class OrdersPayments(unittest.TestCase):
         fresh_db()
         self.p = store.get_product(
             store.add_product("P", "", 100, stock=5, active=1))
-        store.create_order("tok", 200, "point", "Z-BOX 123", "Jan", "j@x.cz", None)
+        store.create_order("tok", 200, "code", "balikovna", "12345678", None)
         store.add_item("tok", self.p, 2)
 
     def test_mark_paid_idempotent(self):
@@ -83,9 +83,14 @@ class OrdersPayments(unittest.TestCase):
         store.wipe_delivery("tok")
         row = store.get_order("tok")
         self.assertEqual(row["wiped"], 1)
+        self.assertIsNone(row["ship_code"])
         self.assertIsNone(row["point_id"])
-        self.assertIsNone(row["recip_name"])
-        self.assertIsNone(row["recip_contact"])
+        self.assertIsNone(row["note"])
+
+    def test_ship_code_roundtrip(self):
+        self.assertEqual(store.get_order("tok")["carrier"], "balikovna")
+        store.set_ship_code("tok", "99887766")
+        self.assertEqual(store.get_order("tok")["ship_code"], "99887766")
         self.assertEqual(store.wipe_candidates(0), [])
 
     def test_wipe_waits(self):

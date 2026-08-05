@@ -30,10 +30,12 @@ CREATE TABLE IF NOT EXISTS orders(
   status        TEXT NOT NULL DEFAULT 'new',
   -- new | paid | shipped | done | cancelled | expired
   total_sat     INTEGER NOT NULL,
-  delivery      TEXT,            -- point | anon | personal | NULL (jen digitální)
-  point_id      TEXT,
-  recip_name    TEXT,
-  recip_contact TEXT,
+  delivery      TEXT,            -- code | personal | NULL (jen digitální)
+  carrier       TEXT,            -- balikovna | ppl (u delivery=code)
+  ship_code     TEXT,            -- podací kód od zákazníka (my ho píšeme na krabici)
+  point_id      TEXT,            -- legacy (staré objednávky point/anon)
+  recip_name    TEXT,            -- legacy
+  recip_contact TEXT,            -- legacy
   note          TEXT,
   payment_hash  TEXT,
   pickup_code   TEXT,
@@ -95,8 +97,26 @@ def connect(path=None):
     _conn.execute("PRAGMA journal_mode=WAL")
     _conn.execute("PRAGMA foreign_keys=ON")
     _conn.executescript(_SCHEMA)
+    _migrate()
     _conn.commit()
     return _conn
+
+
+# Přidávané sloupce (schéma se vyvíjí, data ne). CREATE TABLE IF NOT EXISTS
+# existující tabulku nezmění, takže nové sloupce doplňujeme ručně.
+_ADDED_COLUMNS = (
+    ("orders", "carrier", "TEXT"),
+    ("orders", "ship_code", "TEXT"),
+)
+
+
+def _migrate():
+    for table, column, ctype in _ADDED_COLUMNS:
+        cols = [r["name"] for r in
+                _conn.execute("PRAGMA table_info(%s)" % table).fetchall()]
+        if column not in cols:
+            _conn.execute("ALTER TABLE %s ADD COLUMN %s %s"
+                          % (table, column, ctype))
 
 
 def _execute(sql, params=()):
@@ -226,15 +246,20 @@ def return_stock(order_token):
 
 # --- orders ------------------------------------------------------------------
 
-def create_order(token, total_sat, delivery, point_id, recip_name,
-                 recip_contact, note):
+def create_order(token, total_sat, delivery, carrier=None, ship_code=None,
+                 note=None):
     _execute(
         "INSERT INTO orders(token, created_at, status, total_sat, delivery,"
-        " point_id, recip_name, recip_contact, note)"
-        " VALUES(?,?,?,?,?,?,?,?,?)",
-        (token, int(time.time()), "new", total_sat, delivery, point_id,
-         recip_name, recip_contact, note),
+        " carrier, ship_code, note) VALUES(?,?,?,?,?,?,?,?)",
+        (token, int(time.time()), "new", total_sat, delivery, carrier,
+         ship_code, note),
     )
+
+
+def set_ship_code(token, code):
+    """Podací kód od zákazníka (píšeme ho na krabici). Jde doplnit i později
+    na stránce objednávky — dokud není odesláno."""
+    _execute("UPDATE orders SET ship_code=? WHERE token=?", (code, token))
 
 
 def add_item(order_token, product, qty):
@@ -308,7 +333,7 @@ def wipe_delivery(token):
     """Smaže doručovací/kontaktní údaje — z objednávky zbyde jen účetní stopa."""
     _execute(
         "UPDATE orders SET point_id=NULL, recip_name=NULL, recip_contact=NULL,"
-        " note=NULL, pickup_code=NULL, wiped=1 WHERE token=?",
+        " note=NULL, pickup_code=NULL, ship_code=NULL, wiped=1 WHERE token=?",
         (token,),
     )
 

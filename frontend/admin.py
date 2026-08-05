@@ -131,23 +131,23 @@ def orders_body(manager):
     for o in store.list_orders(200):
         items = store.get_items(o["token"])
         itxt = "; ".join("%d× %s" % (i["qty"], i["name"]) for i in items)
-        deliv = {"point": "výdejna: %s / %s / %s" % (
-                     o["point_id"] or "?", o["recip_name"] or "?",
-                     o["recip_contact"] or "?"),
-                 "anon": "ANONYMNĚ → Balíkovna %s%s" % (
-                     o["point_id"] or "?",
-                     " · kód: %s" % o["pickup_code"] if o["pickup_code"]
-                     else " · KÓD CHYBÍ"),
-                 "personal": "osobně",
-                 None: "digitální"}.get(o["delivery"], o["delivery"])
+        carrier_name = {"balikovna": "Balíkovna", "ppl": "PPL"}.get(
+            o["carrier"] or "", o["carrier"] or "?")
+        if o["delivery"] == "code":
+            deliv = "%s → napsat na krabici: %s" % (
+                carrier_name,
+                ('<b class="mono">%s</b>' % html.escape(o["ship_code"]))
+                if o["ship_code"] else '<span class="warn">ČEKÁME NA KÓD</span>')
+        else:
+            deliv = {"personal": "osobně", None: "digitální",
+                     "point": "legacy výdejna %s" % (o["point_id"] or ""),
+                     "anon": "legacy anon %s" % (o["point_id"] or ""),
+                     }.get(o["delivery"], o["delivery"] or "")
         if o["wiped"]:
             deliv = "(údaje smazány)"
         actions = '<form class="inline" method="post" action="/order">' \
                   '<input type="hidden" name="token" value="%s">' % o["token"]
         if o["status"] == "paid":
-            if o["delivery"] == "anon":
-                actions += ('<input type="text" name="pickup_code" class="tiny" '
-                            'placeholder="výd. kód">')
             actions += '<button class="small" name="action" value="shipped">odesláno</button>'
         if o["status"] in ("paid", "shipped"):
             actions += '<button class="small" name="action" value="done">hotovo</button>'
@@ -162,7 +162,7 @@ def orders_body(manager):
             o["token"][:8], fmt_ts(o["created_at"]),
             STATUS_BADGE.get(o["status"], o["status"]),
             fmt_sat(o["total_sat"]),
-            html.escape(itxt) + html.escape(note), " · " + html.escape(deliv),
+            html.escape(itxt) + html.escape(note), " · " + deliv,  # deliv už escapované
             actions)
     pending = len(store.pending_redemptions(100))
     return """<h1>Objednávky</h1>
@@ -356,9 +356,10 @@ class Handler(BaseHTTPRequestHandler):
         if not order:
             return self._send(404, page("Chyba", "<h1>Objednávka nenalezena</h1>"))
         if action == "shipped" and order["status"] == "paid":
-            code = form.get("pickup_code", "").strip()[:50]
-            if code:
-                store.set_pickup_code(token, code)
+            if order["delivery"] == "code" and not order["ship_code"]:
+                return self._send(400, page("Chyba",
+                    "<h1>Chybí podací kód</h1><p>Zákazník ho ještě neposlal —"
+                    " bez něj zásilku nelze podat.</p>"))
             store.set_status(token, "shipped")
         elif action == "done" and order["status"] in ("paid", "shipped"):
             store.mark_done(token)
