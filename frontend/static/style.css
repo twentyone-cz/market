@@ -126,16 +126,21 @@ p, li { max-width: 46rem; }
 }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr)); gap: 1.25rem; }
 
-/* fotka produktu v kartě katalogu */
+/* karta produktu: obrázek přes celou šířku nahoře, cena a tlačítko dole
+   na stejné lince i u různě dlouhých popisů */
+.grid .card { display: flex; flex-direction: column; padding-top: 0; }
 .pimg {
   display: block;
-  width: 100%;
-  aspect-ratio: 4 / 3;
+  width: calc(100% + 2.5rem);
+  height: 15rem;
   object-fit: contain;
   background: #fff;
-  border-radius: var(--radius);
-  margin-bottom: .9rem;
+  margin: 0 -1.25rem 1.1rem;
+  border-bottom: var(--border-w) solid var(--line);
+  border-radius: var(--radius) var(--radius) 0 0;
 }
+.cardfoot { margin-top: auto; padding-top: .9rem; }
+.cardfoot .price { display: block; font-weight: 700; margin-bottom: .7rem; }
 
 .btn, button {
   display: inline-block;

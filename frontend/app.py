@@ -250,11 +250,14 @@ def katalog_body(products):
                '<button onclick="cartAdd(%d)">Do košíku</button>' % p["id"])
         img = ""
         if p["image"]:
-            img = ('<img class="pimg" src="%s" alt="%s" loading="lazy">'
-                   % (u("/static/produkty/" + p["image"]), html.escape(p["name"])))
+            # odkaz na plnou velikost — v kartě jsou popisky u dílů nečitelné
+            src = u("/static/produkty/" + p["image"])
+            img = ('<a href="%s" target="_blank" rel="noopener">'
+                   '<img class="pimg" src="%s" alt="%s" loading="lazy"></a>'
+                   % (src, src, html.escape(p["name"])))
         cards += """<div class="card">%s<h2 style="margin-top:0">%s</h2>%s
 <p class="muted small">%s</p>
-<p><b>%s sat</b></p>%s</div>""" % (
+<div class="cardfoot"><span class="price">%s sat</span>%s</div></div>""" % (
             img, html.escape(p["name"]), badge, html.escape(p["descr"]),
             fmt_sat(p["price_sat"]), btn)
     return """<section class="hero"><h1>Obchod</h1>
