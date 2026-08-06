@@ -29,16 +29,22 @@ class FakeBackend:
         self.n = 0
         self.paid = set()
         self.fail_create = False
+        self.fail_status = False
+        self.expiries = {}
 
-    def create_invoice(self, amount_sat, memo):
+    def create_invoice(self, amount_sat, memo, expiry_seconds=0):
         import payments
         if self.fail_create:
             raise payments.PaymentError("test: backend down")
         self.n += 1
         h = "hash%04d" % self.n
+        self.expiries[h] = expiry_seconds
         return FakeInvoice("lnbc_test_%s_%d" % (h, amount_sat), h)
 
     def is_paid(self, payment_hash):
+        import payments
+        if self.fail_status:
+            raise payments.PaymentError("test: backend down")
         return payment_hash in self.paid
 
     def pay(self, payment_hash):

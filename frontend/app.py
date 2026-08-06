@@ -95,52 +95,109 @@ def apply_settlement(token):
     if not order:
         return
     if store.mark_paid(token):
+        store.consume_voucher(token)
         vouchers.issue_for_order(token)
         store.bump_stat("stat_orders", 1)
         store.bump_stat("stat_sat", order["total_sat"])
 
 
-def check_order_paid(order):
-    """Ověří platbu objednávky u LNbits; při zaplacení settlene a aplikuje.
-    Vrací True, když je objednávka zaplacená (teď či dříve)."""
-    if order["status"] != "new":
-        return order["status"] in ("paid", "shipped", "done")
-    if not order["payment_hash"]:
-        return False
+def hash_state(payment_hash):
+    """„paid" / „unpaid" / „unknown" podle platební brány. Rozlišení je
+    zásadní: výpadek brány nesmí vypadat jako nezaplaceno (jinak by lifecycle
+    zrušil i objednávky, které se právě platí)."""
+    if not payment_hash:
+        return "unpaid"
     try:
-        if not manager.current().is_paid(order["payment_hash"]):
-            return False
+        return "paid" if manager.current().is_paid(payment_hash) else "unpaid"
     except payments.PaymentError:
+        return "unknown"
+
+
+def payment_state(order):
+    """Stav platby objednávky; u už uzavřených se řídí stavem objednávky."""
+    if order["status"] in ("paid", "shipped", "done"):
+        return "paid"
+    if order["status"] != "new":
+        return "unpaid"
+    return hash_state(order["payment_hash"])
+
+
+def check_order_paid(order):
+    """Ověří platbu u LNbits; při zaplacení settlene a aplikuje.
+    Vrací True, když je objednávka zaplacená (teď či dříve)."""
+    state = payment_state(order)
+    if state != "paid":
         return False
+    if order["status"] != "new":
+        return True
     store.settle_payment(order["payment_hash"])
     apply_settlement(order["token"])
     return True
 
 
 def expire_order(order):
-    store.return_stock(order["token"])
-    store.release_voucher(order["token"])
-    store.set_status(order["token"], "expired")
+    _close_unpaid(order["token"], "expired")
 
 
 def cancel_order(order):
-    store.return_stock(order["token"])
-    store.release_voucher(order["token"])
-    store.set_status(order["token"], "cancelled")
+    _close_unpaid(order["token"], "cancelled")
+
+
+def _close_unpaid(token, status):
+    """Uzavře nezaplacenou objednávku. Stav se mění jako první a podmíněně —
+    kdo prohraje závod (objednávka se mezitím zaplatila), nesmí vrátit sklad
+    ani uvolnit už spotřebovaný dárkový kredit."""
+    if not store.set_status(token, status, expect="new"):
+        return False
+    store.return_stock(token)
+    store.release_voucher(token)
+    return True
 
 
 def lifecycle_tick():
     for o in store.expired_candidates(order_ttl()):
-        # poslední šance: mohla být zaplacená se zavřenou záložkou
-        if not check_order_paid(o):
+        # poslední šance: mohla být zaplacená se zavřenou záložkou.
+        # Při „unknown" (brána nedostupná) se NERUŠÍ — zkusí se příště.
+        if payment_state(o) == "unpaid":
             expire_order(o)
+        else:
+            check_order_paid(o)
     for p in store.pending_payments(86400):
         o = store.get_order(p["order_token"])
-        if o:
+        if not o:
+            continue
+        if o["status"] == "new":
             check_order_paid(o)
+        else:
+            recover_late_payment(o, p)
     for o in store.wipe_candidates(wipe_after()):
         store.wipe_delivery(o["token"])
     vouchers.push_redemptions()
+
+
+def recover_late_payment(order, payment):
+    """Platba dorazila až po expiraci/zrušení objednávky. Peníze jsou na
+    peněžence, takže objednávku nelze nechat ležet: když je zboží pořád
+    skladem, obnoví se; jinak jde do stavu „k vrácení" a řeší se ručně."""
+    if hash_state(payment["payment_hash"]) != "paid":
+        return
+    if not store.settle_payment(payment["payment_hash"]):
+        return
+    token = order["token"]
+    items = [(store.get_product(i["product_id"]), i["qty"])
+             for i in store.get_items(token)]
+    items = [(p, q) for p, q in items if p]
+    ok, _reason = store.reserve_stock(items) if items else (True, "")
+    if ok and store.set_status(token, "paid", expect=("expired", "cancelled")):
+        store.set_paid_at(token)
+        store.consume_voucher(token)
+        vouchers.issue_for_order(token)
+        store.bump_stat("stat_orders", 1)
+        store.bump_stat("stat_sat", order["total_sat"])
+        return
+    if ok:
+        store.return_stock(token)
+    store.set_status(token, "refund", expect=("expired", "cancelled"))
 
 
 def lifecycle_loop():
@@ -203,7 +260,7 @@ document.addEventListener("DOMContentLoaded",cartBadge);
 </div></header>
 <main class="container">%s</main>
 <footer><a href="%s">Phone21</a> · <a href="%s">návod</a> ·
-žádné účty · platba Lightningem · doručovací údaje mažeme</footer>
+žádné účty · platba Lightningem · doručovací údaje mažeme po vyřízení</footer>
 %s</body></html>""" % (
         html.escape(title), u("/static/style.css"), u("/static/qrcode.min.js"),
         SITE_HOME, u("/"), u("/kosik"), SITE_DOCS, SITE_ACCOUNT, body,
@@ -234,6 +291,7 @@ STATUS_LABEL = {
     "new": "čeká na platbu", "paid": "zaplaceno — připravujeme",
     "shipped": "odesláno", "done": "dokončeno",
     "cancelled": "zrušeno", "expired": "vypršelo (nezaplaceno)",
+    "refund": "zaplaceno — vracíme peníze",
 }
 
 
@@ -262,8 +320,8 @@ def katalog_body(products):
             fmt_sat(p["price_sat"]), btn)
     return """<section class="hero"><h1>Obchod</h1>
 <p class="lead">Hardware pro vlastní Phone21 a dárky do privátní sítě.
-Platba Lightningem, bez účtů; doručení na výdejní místo — nebo úplně
-anonymně.</p></section>
+Platba Lightningem, bez účtů. Přepravu si objednáš u dopravce sám (nám pošleš
+jen podací kód), takže se o tobě nedozvíme ani jméno, ani adresu.</p></section>
 <div class="grid">%s</div>""" % cards
 
 
@@ -314,8 +372,9 @@ hodnota zásilky do 5 000 Kč. Přepravu neplatíme ani nereklamujeme my —
 smlouvu s dopravcem máš ty (proto o tobě nic nevíme).</p>
 </div>
 </div>
-<label>Poznámka (nepovinné)</label>
-<input type="text" name="note" class="sub" style="max-width:28rem">
+</fieldset>
+<fieldset><legend>Poznámka (nepovinné)</legend>
+<input type="text" name="note" style="max-width:28rem">
 </fieldset>
 %s
 <button type="submit" id="paybtn">Zaplatit Lightningem</button>
@@ -361,6 +420,10 @@ def order_body(order, items, codes):
         "<tr><td>%s</td><td>%d×</td><td>%s sat</td></tr>" % (
             html.escape(i["name"]), i["qty"], fmt_sat(i["price_sat"] * i["qty"]))
         for i in items)
+    discount = order["discount_sat"] or 0
+    if discount:
+        rows += ('<tr><td>dárkový kredit</td><td></td><td>-%s sat</td></tr>'
+                 % fmt_sat(discount))
     body = """<h1>Objednávka <span class="mono">%s</span></h1>
 <p>Stav: <b>%s</b></p>
 <table><tr><th>položka</th><th></th><th></th></tr>%s
@@ -428,18 +491,48 @@ i adresáta vyplň sebe, vyber výdejní box) — %s. Pak sem vlož %s:</p>
  style="max-width:16rem" required>
 <button type="submit">Uložit kód</button></form>
 <p class="small muted">Bez kódu zásilku nemůžeme podat — a víc od tebe
-nepotřebujeme.</p>""" % (
+nepotřebujeme. Kód nám pošli až ve chvíli, kdy ho máš: jeho platnost běží
+od chvíle, kdy ti ho dopravce vystaví.</p>""" % (
                     html.escape(name), html.escape(note),
                     html.escape(code_label), u("/o/%s/kod" % token),
                     html.escape(code_label)))
+        elif order["delivery"] == "personal" and not order["wiped"]:
+            body += ("<h2>Osobní předání</h2><p>Domluva probíhá přes komunitu"
+                     " — ozvi se tam, kde jsi o Phone21 slyšel (sraz,"
+                     " skupina). Ukaž nám tuhle stránku, podle ní objednávku"
+                     " najdeme; nic dalšího od tebe nechceme.</p>")
         elif order["delivery"] in ("point", "anon") and not order["wiped"]:
             # legacy objednávky ze starého modelu doručení
             body += ("<p class='small muted'>Doručení: %s %s</p>" % (
                 html.escape(order["delivery"]),
                 html.escape(order["point_id"] or "")))
+        if st == "paid" and not order["wiped"]:
+            body += ("""<details><summary>Nemůžeš pokračovat?</summary>
+<p>Když nemáš jak poslat podací kód nebo si zboží rozmyslíš, objednávku
+zruš — zboží vrátíme do nabídky a peníze ti pošleme zpět.</p>
+<form class="inline" method="post" action="%s">
+<button class="danger" type="submit">Zrušit objednávku a vrátit peníze</button>
+</form></details>""" % u("/o/%s/zruseni" % token))
+
+    if st == "refund" and not order["wiped"]:
+        saved = (("Uloženo: " + html.escape(order["refund_dest"]))
+                 if order["refund_dest"] else
+                 "Fakturu vystav s delší platností, ať ji stihneme zaplatit.")
+        body += ("""<h2>Vracíme ti peníze</h2>
+<p>Objednávka neproběhla, ale tvoje platba u nás je. Nemáme na tebe žádný
+kontakt, takže nám sem vlož <b>Lightning fakturu na %s sat</b> (nebo
+Lightning adresu) a peníze pošleme zpět.</p>
+<form class="inline" method="post" action="%s">
+<input type="text" name="dest" placeholder="lnbc… nebo jmeno@penezenka.cz"
+ autocomplete="off" style="max-width:26rem" required>
+<button type="submit">Uložit</button></form>
+<p class="small muted">%s</p>""" % (
+            fmt_sat(order["total_sat"]), u("/o/%s/vraceni" % token), saved))
+
     # odkaz doplní prohlížeč — server nezná doménu, pod kterou běží
     extra += """<script>
 (function(){
+  try { localStorage.removeItem("obchod_cart"); } catch (e) {}
   var f = document.getElementById("ordurl");
   var b = document.getElementById("ordcopy");
   var m = document.getElementById("ordmsg");
@@ -539,6 +632,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.post_checkout(self._form())
         if path.startswith("/o/") and path.endswith("/kod"):
             return self.post_ship_code(path[3:-4], self._form())
+        if path.startswith("/o/") and path.endswith("/zruseni"):
+            return self.post_cancel(path[3:-8])
+        if path.startswith("/o/") and path.endswith("/vraceni"):
+            return self.post_refund_dest(path[3:-8], self._form())
         self._read_body()
         self._send(404, page("404", "<h1>404</h1>"))
 
@@ -572,6 +669,35 @@ class Handler(BaseHTTPRequestHandler):
                 "(číslice/písmena). <a href=\"%s\">Zpět na objednávku</a></p>"
                 % u("/o/" + token)))
         store.set_ship_code(token, code)
+        self._redirect(u("/o/" + token))
+
+    def post_cancel(self, token):
+        """Zákazník ruší zaplacenou, dosud neodeslanou objednávku."""
+        token = "".join(c for c in token if c.isalnum() or c in "-_")
+        order = store.get_order(token)
+        if not order:
+            return self._send(404, page("404", "<h1>Objednávka nenalezena</h1>"))
+        if order["status"] != "paid":
+            return self._send(400, page("Objednávka",
+                "<h1>Zrušit už nejde</h1><p>Objednávka není ve stavu, ze "
+                "kterého by šlo odstoupit.</p>"))
+        if store.set_status(token, "refund", expect="paid"):
+            store.return_stock(token)
+        self._redirect(u("/o/" + token))
+
+    def post_refund_dest(self, token, form):
+        """Kam poslat peníze zpět — jediná věc, kterou od zákazníka
+        potřebujeme, a jen když se vrací platba."""
+        token = "".join(c for c in token if c.isalnum() or c in "-_")
+        order = store.get_order(token)
+        if not order or order["status"] != "refund":
+            return self._send(404, page("404", "<h1>Objednávka nenalezena</h1>"))
+        dest = form.get("dest", "").strip()[:300]
+        if len(dest) < 6:
+            return self._send(400, page("Objednávka",
+                "<h1>Neplatný údaj</h1><p>Vlož Lightning fakturu nebo adresu. "
+                "<a href=\"%s\">Zpět na objednávku</a></p>" % u("/o/" + token)))
+        store.set_refund_dest(token, dest)
         self._redirect(u("/o/" + token))
 
     def get_pay_poll(self, qs):
@@ -666,6 +792,8 @@ class Handler(BaseHTTPRequestHandler):
 
         to_pay = total - discount
         store.create_order(token, to_pay, delivery, carrier, ship_code, note)
+        if discount:
+            store.set_discount(token, discount)
         for prod, qty in pairs:
             store.add_item(token, prod, qty)
 
@@ -677,7 +805,7 @@ class Handler(BaseHTTPRequestHandler):
         # 8. LN invoice
         try:
             inv = manager.current().create_invoice(
-                to_pay, "obchod %s" % token[:8])
+                to_pay, "obchod %s" % token[:8], expiry_seconds=order_ttl())
         except payments.PaymentError:
             store.return_stock(token)
             store.release_voucher(token)

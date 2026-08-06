@@ -108,6 +108,10 @@ _ADDED_COLUMNS = (
     ("orders", "carrier", "TEXT"),
     ("orders", "ship_code", "TEXT"),
     ("products", "image", "TEXT"),  # jméno souboru ve static/produkty/
+    ("orders", "refund_dest", "TEXT"),  # kam vrátit peníze (zadá zákazník)
+    ("vouchers", "value_left", "INTEGER"),   # zbývající kredit
+    ("vouchers", "reserved_sat", "INTEGER"), # rezervováno na rozpracovanou obj.
+    ("orders", "discount_sat", "INTEGER"),   # kolik pokryl dárkový kredit
 )
 
 
@@ -118,6 +122,14 @@ def _migrate():
         if column not in cols:
             _conn.execute("ALTER TABLE %s ADD COLUMN %s %s"
                           % (table, column, ctype))
+    # dřív se kredit utrácel celý najednou; starým kódům dopočítáme zůstatek
+    _conn.execute(
+        "UPDATE vouchers SET value_left = CASE WHEN redeemed_at IS NULL"
+        " THEN value_sat ELSE 0 END WHERE value_left IS NULL")
+    _conn.execute("UPDATE vouchers SET reserved_sat = 0"
+                  " WHERE reserved_sat IS NULL")
+    _conn.execute("UPDATE orders SET discount_sat = 0"
+                  " WHERE discount_sat IS NULL")
 
 
 def _execute(sql, params=()):
@@ -281,8 +293,21 @@ def get_items(token):
                  (token,))
 
 
-def set_status(token, status):
-    _execute("UPDATE orders SET status=? WHERE token=?", (status, token))
+def set_status(token, status, expect=None):
+    """Změna stavu. S `expect` je to CAS — projde jen z očekávaného stavu
+    (jinak by pomalý lifecycle přepsal objednávku, která se mezitím
+    zaplatila). Vrací True, když se stav opravdu změnil."""
+    if expect is None:
+        cur = _execute("UPDATE orders SET status=? WHERE token=?", (status, token))
+        return cur.rowcount == 1
+    if isinstance(expect, str):
+        expect = (expect,)
+    placeholders = ",".join("?" * len(expect))
+    cur = _execute(
+        "UPDATE orders SET status=? WHERE token=? AND status IN (%s)" % placeholders,
+        (status, token) + tuple(expect),
+    )
+    return cur.rowcount == 1
 
 
 def mark_paid(token):
@@ -292,6 +317,22 @@ def mark_paid(token):
         (int(time.time()), token),
     )
     return cur.rowcount == 1
+
+
+def set_discount(token, amount_sat):
+    _execute("UPDATE orders SET discount_sat=? WHERE token=?",
+             (int(amount_sat), token))
+
+
+def set_refund_dest(token, dest):
+    _execute("UPDATE orders SET refund_dest=? WHERE token=?", (dest, token))
+
+
+def set_paid_at(token):
+    """Doplní čas platby u objednávky, která se zaplatila mimo new→paid
+    (pozdní platba po expiraci)."""
+    _execute("UPDATE orders SET paid_at=? WHERE token=? AND paid_at IS NULL",
+             (int(time.time()), token))
 
 
 def mark_done(token):
@@ -334,7 +375,8 @@ def wipe_delivery(token):
     """Smaže doručovací/kontaktní údaje — z objednávky zbyde jen účetní stopa."""
     _execute(
         "UPDATE orders SET point_id=NULL, recip_name=NULL, recip_contact=NULL,"
-        " note=NULL, pickup_code=NULL, ship_code=NULL, wiped=1 WHERE token=?",
+        " note=NULL, pickup_code=NULL, ship_code=NULL, refund_dest=NULL,"
+        " wiped=1 WHERE token=?",
         (token,),
     )
 
@@ -364,10 +406,13 @@ def settle_payment(payment_hash):
 
 
 def pending_payments(max_age_seconds):
-    """Nesettled platby objednávek ve stavu new — pro server-side reconcile."""
+    """Nesettled platby objednávek, které ještě nejsou uzavřené — včetně
+    expirovaných, protože faktura mohla dojít až po expiraci."""
     return query(
         "SELECT p.* FROM payments p JOIN orders o ON o.token = p.order_token"
-        " WHERE p.settled_at IS NULL AND o.status='new' AND p.created_at > ?",
+        " WHERE p.settled_at IS NULL"
+        " AND o.status IN ('new','expired','cancelled')"
+        " AND p.created_at > ?",
         (int(time.time()) - max_age_seconds,),
     )
 
@@ -377,8 +422,8 @@ def pending_payments(max_age_seconds):
 def add_voucher(code, kind, value_sat, days, src_order):
     _execute(
         "INSERT INTO vouchers(code, kind, value_sat, days, src_order,"
-        " created_at) VALUES(?,?,?,?,?,?)",
-        (code, kind, value_sat, days, src_order, int(time.time())),
+        " created_at, value_left, reserved_sat) VALUES(?,?,?,?,?,?,?,0)",
+        (code, kind, value_sat, days, src_order, int(time.time()), value_sat),
     )
 
 
@@ -391,21 +436,35 @@ def vouchers_for_order(src_order):
                  (src_order,))
 
 
-def reserve_voucher(code, order_token):
-    """Atomická rezervace store-kreditu pro objednávku (jen kind=voucher).
-    True = rezervováno; False = neexistuje/už použitý/špatný druh."""
+def reserve_voucher(code, order_token, amount_sat):
+    """Atomická rezervace části store-kreditu pro objednávku (jen
+    kind=voucher). Kredit se nespotřebuje celý — zbytek zůstává na kódu
+    a jde utratit příště."""
     cur = _execute(
-        "UPDATE vouchers SET redeemed_order=?, redeemed_at=?"
-        " WHERE code=? AND kind='voucher' AND redeemed_order IS NULL",
-        (order_token, int(time.time()), code),
+        "UPDATE vouchers SET redeemed_order=?, reserved_sat=?"
+        " WHERE code=? AND kind='voucher' AND redeemed_order IS NULL"
+        " AND value_left >= ?",
+        (order_token, int(amount_sat), code, int(amount_sat)),
     )
     return cur.rowcount == 1
 
 
-def release_voucher(order_token):
-    """Vrátí rezervované vouchery expirované/zrušené objednávky."""
+def consume_voucher(order_token):
+    """Objednávka je zaplacená → rezervovaný kredit se opravdu odečte."""
     _execute(
-        "UPDATE vouchers SET redeemed_order=NULL, redeemed_at=NULL"
+        "UPDATE vouchers SET value_left = value_left - reserved_sat,"
+        " reserved_sat = 0, redeemed_order = NULL,"
+        " redeemed_at = CASE WHEN value_left - reserved_sat <= 0"
+        "                    THEN ? ELSE redeemed_at END"
+        " WHERE redeemed_order=?",
+        (int(time.time()), order_token),
+    )
+
+
+def release_voucher(order_token):
+    """Vrátí rezervovaný kredit expirované/zrušené objednávky."""
+    _execute(
+        "UPDATE vouchers SET redeemed_order=NULL, reserved_sat=0"
         " WHERE redeemed_order=?",
         (order_token,),
     )
@@ -420,11 +479,29 @@ def enqueue_redemption(code, days):
     )
 
 
-def pending_redemptions(limit=10):
+MAX_REDEMPTION_ATTEMPTS = 20
+
+
+def pending_redemptions(limit=10, include_stuck=False):
+    """Fronta registrací. Trvale selhávající položky se po
+    MAX_REDEMPTION_ATTEMPTS pokusech přeskakují, aby neblokovaly novější
+    kódy (dřív stačilo deset zaseknutých na začátku fronty)."""
+    if include_stuck:
+        return query(
+            "SELECT * FROM redemption_queue WHERE sent_at IS NULL"
+            " ORDER BY id LIMIT ?", (limit,))
     return query(
-        "SELECT * FROM redemption_queue WHERE sent_at IS NULL"
+        "SELECT * FROM redemption_queue WHERE sent_at IS NULL AND attempts < ?"
         " ORDER BY id LIMIT ?",
-        (limit,),
+        (MAX_REDEMPTION_ATTEMPTS, limit),
+    )
+
+
+def stuck_redemptions():
+    """Kódy, které se doručit nepodařilo — admin je musí vyřešit ručně."""
+    return query(
+        "SELECT * FROM redemption_queue WHERE sent_at IS NULL AND attempts >= ?"
+        " ORDER BY id", (MAX_REDEMPTION_ATTEMPTS,),
     )
 
 

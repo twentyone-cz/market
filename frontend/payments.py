@@ -21,10 +21,13 @@ class Invoice:
 
 
 class PaymentBackend:
-    def create_invoice(self, amount_sat: int, memo: str) -> Invoice:
+    def create_invoice(self, amount_sat: int, memo: str,
+                       expiry_seconds: int = 0) -> Invoice:
         raise NotImplementedError
 
     def is_paid(self, payment_hash: str) -> bool:
+        """True/False; při nedostupném backendu vyhodí PaymentError —
+        „nevím" se nesmí splést s „nezaplaceno"."""
         raise NotImplementedError
 
 
@@ -53,12 +56,13 @@ class LNbitsBackend(PaymentBackend):
         except OSError as e:
             raise PaymentError("LNbits %s %s -> %s" % (method, path, e)) from e
 
-    def create_invoice(self, amount_sat, memo):
-        resp = self._req(
-            "POST",
-            "/api/v1/payments",
-            {"out": False, "amount": amount_sat, "memo": memo, "unit": "sat"},
-        )
+    def create_invoice(self, amount_sat, memo, expiry_seconds=0):
+        body = {"out": False, "amount": amount_sat, "memo": memo, "unit": "sat"}
+        if expiry_seconds > 0:
+            # bez toho platí výchozí expirace LNbits (~1 h) a faktura přežije
+            # objednávku — zaplacení po expiraci by spadlo do prázdna
+            body["expiry"] = int(expiry_seconds)
+        resp = self._req("POST", "/api/v1/payments", body)
         bolt11 = resp.get("bolt11") or resp.get("payment_request")
         payment_hash = resp.get("payment_hash")
         if not bolt11 or not payment_hash:
@@ -66,10 +70,8 @@ class LNbitsBackend(PaymentBackend):
         return Invoice(bolt11, payment_hash)
 
     def is_paid(self, payment_hash):
-        try:
-            resp = self._req("GET", "/api/v1/payments/%s" % payment_hash)
-        except PaymentError:
-            return False
+        # PaymentError se ZÁMĚRNĚ nechytá: výpadek LNbits není „nezaplaceno"
+        resp = self._req("GET", "/api/v1/payments/%s" % payment_hash)
         # v1.4 vrací {"paid": bool, ...} příp. {"details": {...}, "paid": ...}
         return bool(resp.get("paid"))
 

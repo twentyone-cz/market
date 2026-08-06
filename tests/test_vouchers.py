@@ -126,3 +126,40 @@ class PushRedemptions(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PartialCredit(unittest.TestCase):
+    """Kredit se nesmí spálit celý — zbytek zůstává na kódu."""
+
+    def setUp(self):
+        fresh_db()
+
+    def test_remainder_survives(self):
+        code = paid_voucher_order(value=1000)[0]["code"]
+        d, err = vouchers.voucher_discount(code, 300, "o1")
+        self.assertEqual((d, err), (300, ""))
+        store.consume_voucher("o1")
+        self.assertEqual(store.get_voucher(code)["value_left"], 700)
+        d2, err2 = vouchers.voucher_discount(code, 900, "o2")
+        self.assertEqual((d2, err2), (700, ""))       # jen zbytek
+        store.consume_voucher("o2")
+        v = store.get_voucher(code)
+        self.assertEqual(v["value_left"], 0)
+        self.assertIsNotNone(v["redeemed_at"])
+        d3, err3 = vouchers.voucher_discount(code, 100, "o3")
+        self.assertEqual(d3, 0)
+        self.assertIn("vyčerpan", err3)
+
+    def test_release_returns_reservation(self):
+        code = paid_voucher_order(value=500)[0]["code"]
+        vouchers.voucher_discount(code, 200, "o1")
+        store.release_voucher("o1")                   # objednávka vypršela
+        self.assertEqual(store.get_voucher(code)["value_left"], 500)
+        d, err = vouchers.voucher_discount(code, 500, "o2")
+        self.assertEqual((d, err), (500, ""))
+
+    def test_days_code_in_shop_gets_explanation(self):
+        day = paid_voucher_order(value=300, kind="days", days=30)[0]
+        d, err = vouchers.voucher_discount(day["code"], 300, "o1")
+        self.assertEqual(d, 0)
+        self.assertIn("účtu sítě", err)

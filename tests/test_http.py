@@ -6,6 +6,7 @@ import base64
 import http.client
 import json
 import threading
+import time
 import unittest
 import urllib.parse
 from http.server import ThreadingHTTPServer
@@ -225,11 +226,19 @@ class WebTests(unittest.TestCase):
         self.assertEqual(order["status"], "paid")
         self.assertEqual(order["total_sat"], 0)
         self.assertIsNone(order["payment_hash"])
-        # kredit je spotřebovaný
+        # z kreditu 400 se utratilo 200 — zbytek musí zůstat použitelný
+        self.assertEqual(store.get_voucher(code)["value_left"], 200)
+        st, h, _b = self.c.post("/checkout", checkout_form(
+            [{"id": self.day["id"], "qty": 1}], voucher=code))
+        self.assertEqual(st, 303)
+        self.assertEqual(store.get_order(
+            self._order_token(h["Location"]))["status"], "paid")
+        # teprve teď je vyčerpaný
+        self.assertEqual(store.get_voucher(code)["value_left"], 0)
         st, _h, body = self.c.post("/checkout", checkout_form(
             [{"id": self.day["id"], "qty": 1}], voucher=code))
         self.assertEqual(st, 400)
-        self.assertIn("uplatněn", body)
+        self.assertIn("vyčerpan", body)
 
     def test_voucher_partial_discount(self):
         st, h, _b = self.c.post("/checkout", checkout_form(
@@ -455,3 +464,105 @@ class AdminTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LifecycleSafetyTests(unittest.TestCase):
+    """Peněžní pojistky: pozdní platba, výpadek brány, závody o stav."""
+
+    @classmethod
+    def setUpClass(cls):
+        fresh_db()
+        app.manager = FakeManager()
+        cls.srv, port = start_web()
+        cls.c = Client(port)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+
+    def setUp(self):
+        fresh_db()
+        app.manager = FakeManager()
+        app.limiter = app.RateLimiter(capacity=1000, refill_per_s=1000)
+        self.box, self.vou, self.day = seed_shop()
+
+    def _order(self, qty=1):
+        st, h, _b = self.c.post("/checkout", checkout_form(
+            [{"id": self.box["id"], "qty": qty}], **DELIV))
+        self.assertEqual(st, 303)
+        return h["Location"].rsplit("/", 1)[1]
+
+    def test_invoice_expires_with_order(self):
+        token = self._order()
+        h = store.get_order(token)["payment_hash"]
+        self.assertEqual(app.manager.backend.expiries[h], app.order_ttl())
+
+    def test_backend_outage_does_not_expire_orders(self):
+        token = self._order()
+        store._execute("UPDATE orders SET created_at=? WHERE token=?",
+                       (int(time.time()) - app.order_ttl() - 60, token))
+        app.manager.backend.fail_status = True
+        app.lifecycle_tick()
+        self.assertEqual(store.get_order(token)["status"], "new")
+        # brána zpět a nezaplaceno → teprve teď se objednávka ruší
+        app.manager.backend.fail_status = False
+        app.lifecycle_tick()
+        self.assertEqual(store.get_order(token)["status"], "expired")
+
+    def test_late_payment_revives_order(self):
+        token = self._order()
+        store._execute("UPDATE orders SET created_at=? WHERE token=?",
+                       (int(time.time()) - app.order_ttl() - 60, token))
+        app.lifecycle_tick()
+        self.assertEqual(store.get_order(token)["status"], "expired")
+        self.assertEqual(store.get_product(self.box["id"])["stock"], 3)
+        # zákazník zaplatí až teď — objednávka se musí vzkřísit
+        app.manager.backend.pay(store.get_order(token)["payment_hash"])
+        app.lifecycle_tick()
+        order = store.get_order(token)
+        self.assertEqual(order["status"], "paid")
+        self.assertIsNotNone(order["paid_at"])
+        self.assertEqual(store.get_product(self.box["id"])["stock"], 2)
+
+    def test_late_payment_without_stock_goes_to_refund(self):
+        token = self._order(qty=3)
+        store._execute("UPDATE orders SET created_at=? WHERE token=?",
+                       (int(time.time()) - app.order_ttl() - 60, token))
+        app.lifecycle_tick()
+        store.update_product(self.box["id"], stock=0)  # mezitím vyprodáno
+        app.manager.backend.pay(store.get_order(token)["payment_hash"])
+        app.lifecycle_tick()
+        self.assertEqual(store.get_order(token)["status"], "refund")
+        self.assertEqual(store.get_product(self.box["id"])["stock"], 0)
+
+    def test_refund_destination_flow(self):
+        token = self._order()
+        app.manager.backend.pay(store.get_order(token)["payment_hash"])
+        self.c.get("/o/" + token)
+        self.assertEqual(store.get_order(token)["status"], "paid")
+        # zákazník objednávku zruší → sklad zpět, stav k vrácení
+        st, _h, _b = self.c.post("/o/%s/zruseni" % token, {})
+        self.assertEqual(st, 303)
+        self.assertEqual(store.get_order(token)["status"], "refund")
+        self.assertEqual(store.get_product(self.box["id"])["stock"], 3)
+        _st, _h, body = self.c.get("/o/" + token)
+        self.assertIn("Vracíme ti peníze", body)
+        st, _h, _b = self.c.post("/o/%s/vraceni" % token,
+                                 {"dest": "lnbc1refundtest"})
+        self.assertEqual(st, 303)
+        self.assertEqual(store.get_order(token)["refund_dest"], "lnbc1refundtest")
+
+    def test_expire_cannot_overwrite_paid(self):
+        token = self._order()
+        app.manager.backend.pay(store.get_order(token)["payment_hash"])
+        self.c.get("/o/" + token)                      # settle → paid
+        app.expire_order(store.get_order(token))       # opozdilý lifecycle
+        self.assertEqual(store.get_order(token)["status"], "paid")
+        self.assertEqual(store.get_product(self.box["id"])["stock"], 2)
+
+    def test_stock_returns_only_once(self):
+        token = self._order()
+        order = store.get_order(token)
+        app.cancel_order(order)
+        app.expire_order(order)                        # druhý pokus musí selhat
+        self.assertEqual(store.get_product(self.box["id"])["stock"], 3)

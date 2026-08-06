@@ -117,6 +117,7 @@ STATUS_BADGE = {
     "shipped": "odesláno", "done": "hotovo",
     "cancelled": '<span class="bad">zrušeno</span>',
     "expired": '<span class="muted">vypršelo</span>',
+    "refund": '<span class="bad">K VRÁCENÍ PENĚZ</span>',
 }
 
 
@@ -153,7 +154,12 @@ def orders_body(manager):
             actions += '<button class="small" name="action" value="done">hotovo</button>'
         if o["status"] == "new":
             actions += '<button class="small danger" name="action" value="cancel">zrušit</button>'
-        if not o["wiped"] and o["status"] in ("done", "cancelled", "expired"):
+        if o["status"] in ("paid", "shipped"):
+            actions += ('<button class="small danger" name="action" value="refund"'
+                        ' onclick="return confirm(\'Označit k vrácení peněz?'
+                        ' Sklad se vrátí zpět.\')">k vrácení</button>')
+        if not o["wiped"] and o["status"] in ("done", "cancelled", "expired",
+                                              "refund"):
             actions += '<button class="small danger" name="action" value="wipe">smazat údaje</button>'
         actions += "</form>"
         note = (" · pozn: %s" % o["note"]) if o["note"] else ""
@@ -165,13 +171,20 @@ def orders_body(manager):
             html.escape(itxt) + html.escape(note), " · " + deliv,  # deliv už escapované
             actions)
     pending = len(store.pending_redemptions(100))
+    stuck = len(store.stuck_redemptions())
+    queue = ""
+    if pending:
+        queue += (' · <span class="warn">%d kódů čeká na registraci'
+                  ' u sítě</span>' % pending)
+    if stuck:
+        queue += (' · <span class="bad">%d kódů se registrovat NEPODAŘILO'
+                  ' — vyřeš ručně</span>' % stuck)
     return """<h1>Objednávky</h1>
 <p>platby: %s · objednávek celkem: %d · tržby: %s sat%s</p>
 <table><tr><th>obj.</th><th>kdy</th><th>stav</th><th>částka</th>
 <th>obsah / doručení</th><th>akce</th></tr>%s</table>""" % (
         backend, store.get_stat("stat_orders"), fmt_sat(store.get_stat("stat_sat")),
-        (' · <span class="warn">%d kódů čeká na registraci u CockScale</span>'
-         % pending) if pending else "",
+        queue,
         rows or "<tr><td colspan=6>žádné</td></tr>")
 
 
@@ -392,7 +405,15 @@ class Handler(BaseHTTPRequestHandler):
             store.mark_done(token)
         elif action == "cancel" and order["status"] == "new":
             _deps["cancel_order"](order)
-        elif action == "wipe":
+        elif action == "refund" and order["status"] in ("paid", "shipped"):
+            # zaplacenou objednávku nelze „zrušit" — peníze už dorazily.
+            # Vrátí se sklad a označí se, že čeká na vrácení peněz.
+            store.return_stock(token)
+            store.set_status(token, "refund", expect=("paid", "shipped"))
+        elif action == "wipe" and order["status"] in ("done", "cancelled",
+                                                      "expired", "refund"):
+            # dřív bez kontroly stavu: wipe na zaplacené objednávce smazal
+            # podací kód a zákazníkovi zmizel formulář na jeho doplnění
             store.wipe_delivery(token)
         else:
             return self._send(400, page("Chyba", "<h1>Neplatná akce</h1>"))
@@ -416,6 +437,14 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, AssertionError):
             return self._send(400, page("Produkty",
                                         products_body("Neplatné hodnoty.")))
+        # dny sítě se doručují přes partnerský endpoint — bez nastavení by
+        # zákazník dostal kód, který nikde neplatí
+        if (fields["kind"] == "days" and form.get("active") == "1"
+                and not (store.get_setting("cockscale_api")
+                         and store.get_setting("cockscale_partner_secret"))):
+            return self._send(400, page("Produkty", products_body(
+                "Dny sítě nejde aktivovat: chybí adresa a klíč partnerského "
+                "rozhraní sítě (Nastavení). Kódy by se neregistrovaly.")))
         if form.get("action") == "delete" and pid:
             store.delete_product(pid)
         elif pid:

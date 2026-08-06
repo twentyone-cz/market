@@ -36,12 +36,18 @@ def issue_for_order(token):
     """Po zaplacení objednávky vygeneruje kódy pro digitální položky
     (po kusech) a dny zařadí do registrační fronty. Idempotentní —
     když už kódy existují, nic nepřidává."""
-    if store.vouchers_for_order(token):
-        return
+    existing = store.vouchers_for_order(token)
+    have = {}
+    for v in existing:
+        have[v["kind"]] = have.get(v["kind"], 0) + 1
     for item in store.get_items(token):
         if item["kind"] not in ("voucher", "days"):
             continue
-        for _ in range(item["qty"]):
+        # dopočítáváme podle druhu, ne „existuje aspoň jeden" — pád uprostřed
+        # vydávání jinak nechal část kódů navždy nevydaných
+        missing = item["qty"] - have.get(item["kind"], 0)
+        have[item["kind"]] = max(0, have.get(item["kind"], 0) - item["qty"])
+        for _ in range(max(0, missing)):
             code = generate_code()
             store.add_voucher(code, item["kind"], item["price_sat"],
                               item["days"], token)
@@ -55,14 +61,21 @@ def voucher_discount(code, total_sat, order_token):
     if not norm:
         return 0, "Kód nemá správný formát."
     row = store.get_voucher(norm)
+    if row and row["kind"] == "days":
+        return 0, ("Tenhle kód je na dny privátní sítě — uplatní se na účtu"
+                   " sítě, ne tady v obchodě.")
     if not row or row["kind"] != "voucher":
         return 0, "Neplatný kód."
     src = store.get_order(row["src_order"])
     if not src or src["status"] not in ("paid", "shipped", "done"):
         return 0, "Kód pochází z nezaplacené objednávky."
-    if not store.reserve_voucher(norm, order_token):
+    left = row["value_left"] if row["value_left"] is not None else row["value_sat"]
+    if left <= 0:
+        return 0, "Kód už byl vyčerpaný."
+    amount = min(left, total_sat)
+    if not store.reserve_voucher(norm, order_token, amount):
         return 0, "Kód už byl uplatněn."
-    return min(row["value_sat"], total_sat), ""
+    return amount, ""
 
 
 def push_redemptions():
