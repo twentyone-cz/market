@@ -142,6 +142,23 @@ p, li { max-width: 46rem; }
 .cardfoot { margin-top: auto; padding-top: .9rem; }
 .cardfoot .price { display: block; font-weight: 700; margin-bottom: .7rem; }
 
+/* odkaz na objednávku — bez účtů je to jediná cesta zpátky */
+.linkbox {
+  background: var(--surface-2);
+  border: var(--border-w) solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 1rem 1.15rem;
+  margin: 1.25rem 0;
+}
+.linkrow { display: flex; gap: .6rem; margin: .8rem 0 .3rem; flex-wrap: wrap; }
+.linkrow input {
+  flex: 1 1 18rem;
+  font-family: var(--font-mono, monospace);
+  font-size: .85rem;
+  margin: 0;
+}
+.linkrow button { flex: none; }
+
 .btn, button {
   display: inline-block;
   font-family: var(--font-body);

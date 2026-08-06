@@ -299,7 +299,8 @@ podací kód — nedozvíme se o tobě vůbec nic (ani jméno, ani kam to jde).<
 <option value="balikovna">Balíkovna (Česká pošta) — jen ČR</option>
 <option value="ppl">PPL Balík pro Tebe — ČR i EU</option>
 </select>
-<label>Podací kód (můžeš doplnit i později na stránce objednávky)</label>
+<label>Podací kód (můžeš doplnit i po zaplacení na stránce objednávky —
+odkaz na ni si ale ulož, jiný přístup k objednávce není)</label>
 <input type="text" name="ship_code" placeholder="8 číslic / SMART PIN"
  autocomplete="off">
 <div class="small muted">
@@ -364,8 +365,15 @@ def order_body(order, items, codes):
 <p>Stav: <b>%s</b></p>
 <table><tr><th>položka</th><th></th><th></th></tr>%s
 <tr><th colspan="2">k úhradě</th><th>%s sat</th></tr></table>
-<p class="small muted">Tuhle stránku si ulož — je jediným přístupem
-k objednávce (žádné účty nevedeme).</p>""" % (
+<div class="linkbox">
+<b>Ulož si odkaz na tuhle objednávku.</b> Je jediný přístup k ní — účty
+nevedeme a jinak se k jejímu stavu ani k doplnění podacího kódu nedostaneš.
+<div class="linkrow">
+<input id="ordurl" readonly onclick="this.select()">
+<button type="button" id="ordcopy">Zkopírovat</button>
+</div>
+<span class="small muted" id="ordmsg"></span>
+</div>""" % (
         html.escape(token[:8]), STATUS_LABEL.get(st, st), rows,
         fmt_sat(order["total_sat"]))
 
@@ -429,6 +437,27 @@ nepotřebujeme.</p>""" % (
             body += ("<p class='small muted'>Doručení: %s %s</p>" % (
                 html.escape(order["delivery"]),
                 html.escape(order["point_id"] or "")))
+    # odkaz doplní prohlížeč — server nezná doménu, pod kterou běží
+    extra += """<script>
+(function(){
+  var f = document.getElementById("ordurl");
+  var b = document.getElementById("ordcopy");
+  var m = document.getElementById("ordmsg");
+  if (!f || !b) { return; }
+  f.value = location.href;
+  b.addEventListener("click", function(){
+    var done = function(){ m.textContent = "Zkopírováno."; };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(f.value).then(done, fallback);
+    } else { fallback(); }
+    function fallback(){
+      f.select();
+      try { document.execCommand("copy"); done(); }
+      catch (e) { m.textContent = "Zkopíruj odkaz ručně z pole výše."; }
+    }
+  });
+})();
+</script>"""
     return page("Objednávka", body, extra)
 
 
