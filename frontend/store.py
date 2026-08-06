@@ -108,7 +108,6 @@ _ADDED_COLUMNS = (
     ("orders", "carrier", "TEXT"),
     ("orders", "ship_code", "TEXT"),
     ("products", "image", "TEXT"),  # jméno souboru ve static/produkty/
-    ("orders", "refund_dest", "TEXT"),  # kam vrátit peníze (zadá zákazník)
     ("vouchers", "value_left", "INTEGER"),   # zbývající kredit
     ("vouchers", "reserved_sat", "INTEGER"), # rezervováno na rozpracovanou obj.
     ("orders", "discount_sat", "INTEGER"),   # kolik pokryl dárkový kredit
@@ -324,10 +323,6 @@ def set_discount(token, amount_sat):
              (int(amount_sat), token))
 
 
-def set_refund_dest(token, dest):
-    _execute("UPDATE orders SET refund_dest=? WHERE token=?", (dest, token))
-
-
 def set_paid_at(token):
     """Doplní čas platby u objednávky, která se zaplatila mimo new→paid
     (pozdní platba po expiraci)."""
@@ -375,8 +370,7 @@ def wipe_delivery(token):
     """Smaže doručovací/kontaktní údaje — z objednávky zbyde jen účetní stopa."""
     _execute(
         "UPDATE orders SET point_id=NULL, recip_name=NULL, recip_contact=NULL,"
-        " note=NULL, pickup_code=NULL, ship_code=NULL, refund_dest=NULL,"
-        " wiped=1 WHERE token=?",
+        " note=NULL, pickup_code=NULL, ship_code=NULL, wiped=1 WHERE token=?",
         (token,),
     )
 
@@ -415,6 +409,15 @@ def pending_payments(max_age_seconds):
         " AND p.created_at > ?",
         (int(time.time()) - max_age_seconds,),
     )
+
+
+def payments_on_closed_orders():
+    """Platby, které dorazily k objednávce, co se už nedala obnovit. Peníze
+    na peněžence jsou — ať to obsluha aspoň vidí."""
+    return query(
+        "SELECT p.* FROM payments p JOIN orders o ON o.token = p.order_token"
+        " WHERE p.settled_at IS NOT NULL AND o.status IN ('expired','cancelled')"
+        " ORDER BY p.created_at DESC")
 
 
 # --- vouchers ----------------------------------------------------------------

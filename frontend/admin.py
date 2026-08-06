@@ -117,7 +117,6 @@ STATUS_BADGE = {
     "shipped": "odesláno", "done": "hotovo",
     "cancelled": '<span class="bad">zrušeno</span>',
     "expired": '<span class="muted">vypršelo</span>',
-    "refund": '<span class="bad">K VRÁCENÍ PENĚZ</span>',
 }
 
 
@@ -154,12 +153,7 @@ def orders_body(manager):
             actions += '<button class="small" name="action" value="done">hotovo</button>'
         if o["status"] == "new":
             actions += '<button class="small danger" name="action" value="cancel">zrušit</button>'
-        if o["status"] in ("paid", "shipped"):
-            actions += ('<button class="small danger" name="action" value="refund"'
-                        ' onclick="return confirm(\'Označit k vrácení peněz?'
-                        ' Sklad se vrátí zpět.\')">k vrácení</button>')
-        if not o["wiped"] and o["status"] in ("done", "cancelled", "expired",
-                                              "refund"):
+        if not o["wiped"] and o["status"] in ("done", "cancelled", "expired"):
             actions += '<button class="small danger" name="action" value="wipe">smazat údaje</button>'
         actions += "</form>"
         note = (" · pozn: %s" % o["note"]) if o["note"] else ""
@@ -172,7 +166,11 @@ def orders_body(manager):
             actions)
     pending = len(store.pending_redemptions(100))
     stuck = len(store.stuck_redemptions())
+    orphan = len(store.payments_on_closed_orders())
     queue = ""
+    if orphan:
+        queue += (' · <span class="bad">%d plateb dorazilo k uzavřené'
+                  ' objednávce</span>' % orphan)
     if pending:
         queue += (' · <span class="warn">%d kódů čeká na registraci'
                   ' u sítě</span>' % pending)
@@ -405,13 +403,8 @@ class Handler(BaseHTTPRequestHandler):
             store.mark_done(token)
         elif action == "cancel" and order["status"] == "new":
             _deps["cancel_order"](order)
-        elif action == "refund" and order["status"] in ("paid", "shipped"):
-            # zaplacenou objednávku nelze „zrušit" — peníze už dorazily.
-            # Vrátí se sklad a označí se, že čeká na vrácení peněz.
-            store.return_stock(token)
-            store.set_status(token, "refund", expect=("paid", "shipped"))
         elif action == "wipe" and order["status"] in ("done", "cancelled",
-                                                      "expired", "refund"):
+                                                      "expired"):
             # dřív bez kontroly stavu: wipe na zaplacené objednávce smazal
             # podací kód a zákazníkovi zmizel formulář na jeho doplnění
             store.wipe_delivery(token)

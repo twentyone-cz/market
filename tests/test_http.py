@@ -524,7 +524,7 @@ class LifecycleSafetyTests(unittest.TestCase):
         self.assertIsNotNone(order["paid_at"])
         self.assertEqual(store.get_product(self.box["id"])["stock"], 2)
 
-    def test_late_payment_without_stock_goes_to_refund(self):
+    def test_late_payment_without_stock_stays_visible(self):
         token = self._order(qty=3)
         store._execute("UPDATE orders SET created_at=? WHERE token=?",
                        (int(time.time()) - app.order_ttl() - 60, token))
@@ -532,25 +532,10 @@ class LifecycleSafetyTests(unittest.TestCase):
         store.update_product(self.box["id"], stock=0)  # mezitím vyprodáno
         app.manager.backend.pay(store.get_order(token)["payment_hash"])
         app.lifecycle_tick()
-        self.assertEqual(store.get_order(token)["status"], "refund")
+        # obnovit nejde; platba ale nesmí zmizet z očí obsluhy
+        self.assertEqual(store.get_order(token)["status"], "expired")
         self.assertEqual(store.get_product(self.box["id"])["stock"], 0)
-
-    def test_refund_destination_flow(self):
-        token = self._order()
-        app.manager.backend.pay(store.get_order(token)["payment_hash"])
-        self.c.get("/o/" + token)
-        self.assertEqual(store.get_order(token)["status"], "paid")
-        # zákazník objednávku zruší → sklad zpět, stav k vrácení
-        st, _h, _b = self.c.post("/o/%s/zruseni" % token, {})
-        self.assertEqual(st, 303)
-        self.assertEqual(store.get_order(token)["status"], "refund")
-        self.assertEqual(store.get_product(self.box["id"])["stock"], 3)
-        _st, _h, body = self.c.get("/o/" + token)
-        self.assertIn("Vrácení peněz", body)
-        st, _h, _b = self.c.post("/o/%s/vraceni" % token,
-                                 {"dest": "lnbc1refundtest"})
-        self.assertEqual(st, 303)
-        self.assertEqual(store.get_order(token)["refund_dest"], "lnbc1refundtest")
+        self.assertEqual(len(store.payments_on_closed_orders()), 1)
 
     def test_expire_cannot_overwrite_paid(self):
         token = self._order()

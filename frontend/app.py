@@ -197,7 +197,8 @@ def recover_late_payment(order, payment):
         return
     if ok:
         store.return_stock(token)
-    store.set_status(token, "refund", expect=("expired", "cancelled"))
+    # zboží už není — objednávka zůstane uzavřená a platba se ukáže
+    # v administraci jako „dorazila k uzavřené objednávce" (řeší se ručně)
 
 
 def lifecycle_loop():
@@ -291,7 +292,6 @@ STATUS_LABEL = {
     "new": "čeká na platbu", "paid": "zaplaceno — chystá se k odeslání",
     "shipped": "odesláno", "done": "dokončeno",
     "cancelled": "zrušeno", "expired": "vypršelo (nezaplaceno)",
-    "refund": "zaplaceno — peníze se vrací",
 }
 
 
@@ -506,28 +506,6 @@ od chvíle, kdy ti ho dopravce vystaví.</p>""" % (
             body += ("<p class='small muted'>Doručení: %s %s</p>" % (
                 html.escape(order["delivery"]),
                 html.escape(order["point_id"] or "")))
-        if st == "paid" and not order["wiped"]:
-            body += ("""<details><summary>Nemůžeš pokračovat?</summary>
-<p>Když nemáš jak poslat podací kód nebo si zboží rozmyslíš, objednávku
-zruš — zboží se vrátí do nabídky a peníze putují zpátky k tobě.</p>
-<form class="inline" method="post" action="%s">
-<button class="danger" type="submit">Zrušit objednávku a vrátit peníze</button>
-</form></details>""" % u("/o/%s/zruseni" % token))
-
-    if st == "refund" and not order["wiped"]:
-        saved = (("Uloženo: " + html.escape(order["refund_dest"]))
-                 if order["refund_dest"] else
-                 "Fakturu vystav s delší platností, ať ji jde v klidu zaplatit.")
-        body += ("""<h2>Vrácení peněz</h2>
-<p>Objednávka neproběhla, ale tvoje platba dorazila. Kontakt na tebe nikde
-není, takže sem vlož <b>Lightning fakturu na %s sat</b> (nebo Lightning
-adresu) a peníze se pošlou zpátky.</p>
-<form class="inline" method="post" action="%s">
-<input type="text" name="dest" placeholder="lnbc… nebo jmeno@penezenka.cz"
- autocomplete="off" style="max-width:26rem" required>
-<button type="submit">Uložit</button></form>
-<p class="small muted">%s</p>""" % (
-            fmt_sat(order["total_sat"]), u("/o/%s/vraceni" % token), saved))
 
     # odkaz doplní prohlížeč — server nezná doménu, pod kterou běží
     extra += """<script>
@@ -632,10 +610,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.post_checkout(self._form())
         if path.startswith("/o/") and path.endswith("/kod"):
             return self.post_ship_code(path[3:-4], self._form())
-        if path.startswith("/o/") and path.endswith("/zruseni"):
-            return self.post_cancel(path[3:-8])
-        if path.startswith("/o/") and path.endswith("/vraceni"):
-            return self.post_refund_dest(path[3:-8], self._form())
         self._read_body()
         self._send(404, page("404", "<h1>404</h1>"))
 
@@ -669,35 +643,6 @@ class Handler(BaseHTTPRequestHandler):
                 "(číslice/písmena). <a href=\"%s\">Zpět na objednávku</a></p>"
                 % u("/o/" + token)))
         store.set_ship_code(token, code)
-        self._redirect(u("/o/" + token))
-
-    def post_cancel(self, token):
-        """Zákazník ruší zaplacenou, dosud neodeslanou objednávku."""
-        token = "".join(c for c in token if c.isalnum() or c in "-_")
-        order = store.get_order(token)
-        if not order:
-            return self._send(404, page("404", "<h1>Objednávka nenalezena</h1>"))
-        if order["status"] != "paid":
-            return self._send(400, page("Objednávka",
-                "<h1>Zrušit už nejde</h1><p>Objednávka není ve stavu, ze "
-                "kterého by šlo odstoupit.</p>"))
-        if store.set_status(token, "refund", expect="paid"):
-            store.return_stock(token)
-        self._redirect(u("/o/" + token))
-
-    def post_refund_dest(self, token, form):
-        """Kam poslat peníze zpět — jediná věc, kterou od zákazníka
-        potřeba, a jen když se vrací platba."""
-        token = "".join(c for c in token if c.isalnum() or c in "-_")
-        order = store.get_order(token)
-        if not order or order["status"] != "refund":
-            return self._send(404, page("404", "<h1>Objednávka nenalezena</h1>"))
-        dest = form.get("dest", "").strip()[:300]
-        if len(dest) < 6:
-            return self._send(400, page("Objednávka",
-                "<h1>Neplatný údaj</h1><p>Vlož Lightning fakturu nebo adresu. "
-                "<a href=\"%s\">Zpět na objednávku</a></p>" % u("/o/" + token)))
-        store.set_refund_dest(token, dest)
         self._redirect(u("/o/" + token))
 
     def get_pay_poll(self, qs):
