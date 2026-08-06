@@ -1,6 +1,6 @@
 # Obchod — primitivní e-shop s Lightning platbou
 
-Prodejní kanál jednadvacet phone: hardware (krabička, modem) + digitální
+Prodejní kanál Phone21: hardware (miniserver, modem) + digitální
 zboží (dárkový kredit, dny privátní sítě). Čistá Python stdlib, vzory
 z [CockScale](../CockScale) (payments/captcha/admin/settings 1:1).
 

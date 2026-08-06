@@ -28,7 +28,7 @@ class Client:
     def __init__(self, port):
         self.port = port
 
-    def req(self, method, path, form=None, headers=None):
+    def req(self, method, path, form=None, headers=None, raw=False):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
         body = urllib.parse.urlencode(form).encode() if form else None
         h = dict(headers or {})
@@ -36,7 +36,9 @@ class Client:
             h["Content-Type"] = "application/x-www-form-urlencoded"
         conn.request(method, path, body=body, headers=h)
         resp = conn.getresponse()
-        data = resp.read().decode()
+        data = resp.read()
+        if not raw:
+            data = data.decode()
         conn.close()
         return resp.status, dict(resp.getheaders()), data
 
@@ -104,6 +106,19 @@ class WebTests(unittest.TestCase):
         self.assertIn("text/css", h["Content-Type"])
         st, _h, _b = self.c.get("/static/../app.py")
         self.assertEqual(st, 404)
+
+    def test_product_image(self):
+        st, h, _b = self.c.get("/static/produkty/modem.jpg", raw=True)
+        self.assertEqual(st, 200)
+        self.assertIn("image/jpeg", h["Content-Type"])
+        store.update_product(self.box["id"], image="modem.jpg")
+        _st, _h, body = self.c.get("/")
+        self.assertIn("/static/produkty/modem.jpg", body)
+        # mimo povolený podadresář se nedostaneme
+        for path in ("/static/produkty/../app.py", "/static/produkty/sub/x.jpg",
+                     "/static/tajne/x.jpg"):
+            st, _h, _b = self.c.get(path)
+            self.assertEqual(st, 404, path)
 
     # -- checkout validace --
 

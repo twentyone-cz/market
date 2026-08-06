@@ -1,4 +1,4 @@
-"""Obchod — primitivní e-shop s Lightning platbou (jednadvacet phone).
+"""Obchod — primitivní e-shop s Lightning platbou (Phone21).
 
 Čistá Python stdlib (žádný pip). Vzory převzaty z CockScale/frontend:
 ThreadingHTTPServer, settings v DB (admin UI, env jen default), LNbits
@@ -161,7 +161,7 @@ def fmt_sat(n):
 def page(title, body, extra=""):
     return """<!doctype html><html lang="cs"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>%s — obchod jednadvacet phone</title>
+<title>%s — obchod Phone21</title>
 <link rel="stylesheet" href="%s">
 <style>
 /* Doplňky ke sdílenému stylu: formuláře (style.css dává inputům width:100%%,
@@ -197,12 +197,12 @@ document.addEventListener("DOMContentLoaded",cartBadge);
 </script></head>
 <body>
 <header class="site-header"><div class="container">
-<a class="brand" href="%s">jednadvacet <em>phone</em></a>
+<a class="brand" href="%s">Phone<em>21</em></a>
 <nav class="main"><a href="%s">Nabídka</a><a href="%s">Košík<span id="cartn"></span></a>
 <a href="%s">Návod</a><a href="%s">Můj účet</a></nav>
 </div></header>
 <main class="container">%s</main>
-<footer><a href="%s">jednadvacet phone</a> · <a href="%s">návod</a> ·
+<footer><a href="%s">Phone21</a> · <a href="%s">návod</a> ·
 žádné účty · platba Lightningem · doručovací údaje mažeme</footer>
 %s</body></html>""" % (
         html.escape(title), u("/static/style.css"), u("/static/qrcode.min.js"),
@@ -248,14 +248,18 @@ def katalog_body(products):
         soldout = (p["stock"] == 0)
         btn = ("<button disabled>vyprodáno</button>" if soldout else
                '<button onclick="cartAdd(%d)">Do košíku</button>' % p["id"])
-        cards += """<div class="card"><h2 style="margin-top:0">%s</h2>%s
+        img = ""
+        if p["image"]:
+            img = ('<img class="pimg" src="%s" alt="%s" loading="lazy">'
+                   % (u("/static/produkty/" + p["image"]), html.escape(p["name"])))
+        cards += """<div class="card">%s<h2 style="margin-top:0">%s</h2>%s
 <p class="muted small">%s</p>
 <p><b>%s sat</b></p>%s</div>""" % (
-            html.escape(p["name"]), badge, html.escape(p["descr"]),
+            img, html.escape(p["name"]), badge, html.escape(p["descr"]),
             fmt_sat(p["price_sat"]), btn)
     return """<section class="hero"><h1>Obchod</h1>
-<p class="lead">Hardware pro vlastní telefonní krabičku a dárky do privátní
-sítě. Platba Lightningem, bez účtů; doručení na výdejní místo — nebo úplně
+<p class="lead">Hardware pro vlastní Phone21 a dárky do privátní sítě.
+Platba Lightningem, bez účtů; doručení na výdejní místo — nebo úplně
 anonymně.</p></section>
 <div class="grid">%s</div>""" % cards
 
@@ -546,10 +550,17 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"paid": check_order_paid(order)})
 
     def get_static(self, path):
-        name = os.path.basename(path)
-        fpath = os.path.join(os.path.dirname(__file__), "static", name)
-        ctypes = {".css": "text/css", ".js": "application/javascript"}
-        ext = os.path.splitext(name)[1]
+        rel = path[len("/static/"):]
+        # jen kořen static/ a jeden povolený podadresář — žádné procházení stromem
+        parts = rel.split("/")
+        if len(parts) > 2 or (len(parts) == 2 and parts[0] != "produkty"):
+            return self._send(404, "not found", "text/plain")
+        name = os.path.basename(parts[-1])
+        fpath = os.path.join(os.path.dirname(__file__), "static", *parts[:-1], name)
+        ctypes = {".css": "text/css", ".js": "application/javascript",
+                  ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                  ".png": "image/png", ".webp": "image/webp"}
+        ext = os.path.splitext(name)[1].lower()
         if ext not in ctypes or not os.path.isfile(fpath):
             return self._send(404, "not found", "text/plain")
         with open(fpath, "rb") as f:
@@ -652,24 +663,26 @@ class Handler(BaseHTTPRequestHandler):
 # --- start -------------------------------------------------------------------
 
 SEED_PRODUCTS = (
-    # (name, descr, price_sat, kind, days, stock)  — vše NEaktivní, ceny
-    # jsou placeholder; zapíná a ladí se v admin UI.
-    ("Krabička jednadvacet phone", "Kompletní set: mini-server s nahraným "
-     "systémem + USB modem. Zapojíš SIM a jedeš.", 2_500_000, "physical", 0, 0),
+    # (name, descr, price_sat, kind, days, stock, image)  — vše NEaktivní,
+    # ceny jsou placeholder; zapíná a ladí se v admin UI.
+    ("Phone21 miniserver", "Kompletní set: miniserver s nahraným systémem "
+     "+ USB modem. Zapojíš SIM a jedeš.", 2_500_000, "physical", 0, 0,
+     "set.jpg"),
     ("USB LTE modem", "Kompatibilní modem pro vlastní stavbu (návod na webu).",
-     900_000, "physical", 0, 0),
+     900_000, "physical", 0, 0, "modem.jpg"),
     ("Dárkový kredit obchodu", "Kód na nákup čehokoli tady — dárek bez "
-     "vyzvídání adresy.", 100_000, "voucher", 0, -1),
+     "vyzvídání adresy.", 100_000, "voucher", 0, -1, ""),
     ("Dárkové dny privátní sítě (30)", "Kód na 30 dní privátní sítě — "
-     "obdarovaný ho uplatní na svém účtu.", 12_000, "days", 30, -1),
+     "obdarovaný ho uplatní na svém účtu.", 12_000, "days", 30, -1, ""),
 )
 
 
 def seed_products():
     if store.list_products(active_only=False):
         return
-    for name, descr, price, kind, days, stock in SEED_PRODUCTS:
-        store.add_product(name, descr, price, kind, days, stock, active=0)
+    for name, descr, price, kind, days, stock, image in SEED_PRODUCTS:
+        store.add_product(name, descr, price, kind, days, stock, active=0,
+                          image=image)
 
 
 def main():

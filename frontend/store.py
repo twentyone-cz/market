@@ -107,6 +107,7 @@ def connect(path=None):
 _ADDED_COLUMNS = (
     ("orders", "carrier", "TEXT"),
     ("orders", "ship_code", "TEXT"),
+    ("products", "image", "TEXT"),  # jméno souboru ve static/produkty/
 )
 
 
@@ -175,18 +176,18 @@ def get_stat(key):
 # --- products ----------------------------------------------------------------
 
 def add_product(name, descr, price_sat, kind="physical", days=0, stock=0,
-                active=0, sort=100):
+                active=0, sort=100, image=""):
     cur = _execute(
         "INSERT INTO products(name, descr, price_sat, kind, days, stock,"
-        " active, sort) VALUES(?,?,?,?,?,?,?,?)",
-        (name, descr, price_sat, kind, days, stock, active, sort),
+        " active, sort, image) VALUES(?,?,?,?,?,?,?,?,?)",
+        (name, descr, price_sat, kind, days, stock, active, sort, image),
     )
     return cur.lastrowid
 
 
 def update_product(pid, **fields):
     allowed = {"name", "descr", "price_sat", "kind", "days", "stock",
-               "active", "sort"}
+               "active", "sort", "image"}
     keys = [k for k in fields if k in allowed]
     if not keys:
         return

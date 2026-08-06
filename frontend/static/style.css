@@ -126,6 +126,17 @@ p, li { max-width: 46rem; }
 }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr)); gap: 1.25rem; }
 
+/* fotka produktu v kartě katalogu */
+.pimg {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: contain;
+  background: #fff;
+  border-radius: var(--radius);
+  margin-bottom: .9rem;
+}
+
 .btn, button {
   display: inline-block;
   font-family: var(--font-body);

@@ -175,6 +175,29 @@ def orders_body(manager):
         rows or "<tr><td colspan=6>žádné</td></tr>")
 
 
+PRODUCT_IMG_DIR = os.path.join(os.path.dirname(__file__), "static", "produkty")
+
+
+def product_images():
+    """Obrázky nahrané do static/produkty/ — nabídnou se v administraci."""
+    try:
+        names = sorted(n for n in os.listdir(PRODUCT_IMG_DIR)
+                       if os.path.splitext(n)[1].lower()
+                       in (".jpg", ".jpeg", ".png", ".webp"))
+    except OSError:
+        names = []
+    return names
+
+
+def image_select(name, current):
+    opts = '<option value="">— bez obrázku —</option>'
+    for img in product_images():
+        opts += '<option value="%s"%s>%s</option>' % (
+            html.escape(img), " selected" if img == current else "",
+            html.escape(img))
+    return '<select name="%s">%s</select>' % (name, opts)
+
+
 def products_body(msg=""):
     rows = ""
     for p in store.list_products(active_only=False):
@@ -187,6 +210,7 @@ def products_body(msg=""):
 <option value="voucher"%s>kredit</option><option value="days"%s>dny sítě</option></select>
 <input type="number" name="days" value="%d" class="tiny" title="dny (jen druh dny)"></td>
 <td><input type="number" name="stock" value="%d" class="tiny" title="-1 = neomezeně"></td>
+<td>%s</td>
 <td><select name="active"><option value="1"%s>ANO</option><option value="0"%s>ne</option></select></td>
 <td><button class="small" name="action" value="save">uložit</button>
 <button class="small danger" name="action" value="delete"
@@ -196,13 +220,15 @@ def products_body(msg=""):
             " selected" if p["kind"] == "physical" else "",
             " selected" if p["kind"] == "voucher" else "",
             " selected" if p["kind"] == "days" else "",
-            p["days"], p["stock"],
+            p["days"], p["stock"], image_select("image", p["image"] or ""),
             " selected" if p["active"] else "", "" if p["active"] else " selected")
     return """<h1>Produkty</h1>
 <p class="msg">Ceny v sat. Sklad -1 = neomezeně (digitální). Druh „kredit" =
-dárkový kód do obchodu, „dny sítě" = kód na dny privátní sítě (vyplň počet dnů).</p>
+dárkový kód do obchodu, „dny sítě" = kód na dny privátní sítě (vyplň počet dnů).
+Obrázky se nahrávají do <code>frontend/static/produkty/</code> v repozitáři;
+tady se jen vybírají.</p>
 <table><tr><th>název</th><th>popis</th><th>cena</th><th>druh</th><th>sklad</th>
-<th>aktivní</th><th></th></tr>%s</table>
+<th>obrázek</th><th>aktivní</th><th></th></tr>%s</table>
 <h2>Nový produkt</h2>
 <form method="post" action="/product"><input type="hidden" name="id" value="0">
 <label>Název</label><input type="text" name="name">
@@ -212,8 +238,9 @@ dárkový kód do obchodu, „dny sítě" = kód na dny privátní sítě (vypl�
 <option value="voucher">kredit</option><option value="days">dny sítě</option></select>
 <label>Dny (jen druh „dny sítě")</label><input type="number" name="days" value="0">
 <label>Sklad (-1 = neomezeně)</label><input type="number" name="stock" value="0">
+<label>Obrázek</label>%s
 <p><button name="action" value="save">Přidat (neaktivní)</button></p></form>""" % (
-        rows or "<tr><td colspan=7>žádné</td></tr>")
+        rows or "<tr><td colspan=8>žádné</td></tr>", image_select("image", ""))
 
 
 def settings_body(msg=""):
@@ -381,9 +408,11 @@ class Handler(BaseHTTPRequestHandler):
                 kind=form.get("kind", "physical"),
                 days=max(0, int(form.get("days", "0"))),
                 stock=max(-1, int(form.get("stock", "0"))),
+                image=form.get("image", "").strip(),
             )
             assert fields["kind"] in ("physical", "voucher", "days")
             assert fields["name"]
+            assert fields["image"] in ("",) + tuple(product_images())
         except (ValueError, AssertionError):
             return self._send(400, page("Produkty",
                                         products_body("Neplatné hodnoty.")))
