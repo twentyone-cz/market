@@ -138,7 +138,7 @@ def orders_body(manager):
             deliv = "%s → napsat na krabici: %s" % (
                 carrier_name,
                 ('<b class="mono">%s</b>' % html.escape(o["ship_code"]))
-                if o["ship_code"] else '<span class="warn">ČEKÁME NA KÓD</span>')
+                if o["ship_code"] else '<span class="warn">CHYBÍ KÓD</span>')
         else:
             deliv = {"personal": "osobně", None: "digitální",
                      "point": "legacy výdejna %s" % (o["point_id"] or ""),

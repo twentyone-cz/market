@@ -260,7 +260,7 @@ document.addEventListener("DOMContentLoaded",cartBadge);
 </div></header>
 <main class="container">%s</main>
 <footer><a href="%s">Phone21</a> · <a href="%s">návod</a> ·
-žádné účty · platba Lightningem · doručovací údaje mažeme po vyřízení</footer>
+žádné účty · platba Lightningem · doručovací údaje se po vyřízení mažou</footer>
 %s</body></html>""" % (
         html.escape(title), u("/static/style.css"), u("/static/qrcode.min.js"),
         SITE_HOME, u("/"), u("/kosik"), SITE_DOCS, SITE_ACCOUNT, body,
@@ -288,16 +288,16 @@ def normalize_ship_code(raw):
     return code if 6 <= len(code) <= 14 else ""
 
 STATUS_LABEL = {
-    "new": "čeká na platbu", "paid": "zaplaceno — připravujeme",
+    "new": "čeká na platbu", "paid": "zaplaceno — chystá se k odeslání",
     "shipped": "odesláno", "done": "dokončeno",
     "cancelled": "zrušeno", "expired": "vypršelo (nezaplaceno)",
-    "refund": "zaplaceno — vracíme peníze",
+    "refund": "zaplaceno — peníze se vrací",
 }
 
 
 def katalog_body(products):
     if not products:
-        return ("<h1>Obchod</h1><p class='muted'>Zrovna nic nenabízíme — "
+        return ("<h1>Obchod</h1><p class='muted'>Zrovna tu nic není — "
                 "zkus to později.</p>")
     cards = ""
     for p in products:
@@ -320,8 +320,8 @@ def katalog_body(products):
             fmt_sat(p["price_sat"]), btn)
     return """<section class="hero"><h1>Obchod</h1>
 <p class="lead">Hardware pro vlastní Phone21 a dárky do privátní sítě.
-Platba Lightningem, bez účtů. Přepravu si objednáš u dopravce sám (nám pošleš
-jen podací kód), takže se o tobě nedozvíme ani jméno, ani adresu.</p></section>
+Platba Lightningem, bez účtů. Přepravu si objednáš u dopravce sám (sem se
+vkládá jen podací kód), takže se o tobě nikdo nedozví jméno ani adresu.</p></section>
 <div class="grid">%s</div>""" % cards
 
 
@@ -347,8 +347,8 @@ def kosik_body(products, msg=""):
  style="max-width:22rem" autocomplete="off"></fieldset>
 <fieldset id="delivery"><legend>Doručení</legend>
 <label class="opt"><input type="radio" name="delivery" value="code" checked>
-<span><b>Přepravu si objednáš sám</b>Zaplatíš ji u dopravce, nám pošleš jen
-podací kód — nedozvíme se o tobě vůbec nic (ani jméno, ani kam to jde).</span></label>
+<span><b>Přepravu si objednáš sám</b>Zaplatíš ji u dopravce a sem vložíš jen
+podací kód — nikdo se o tobě nedozví nic (ani jméno, ani kam to jde).</span></label>
 <label class="opt"><input type="radio" name="delivery" value="personal">
 <span><b>Osobní předání</b>Po domluvě (komunita, meetupy).</span></label>
 <div id="d-code" class="sub">
@@ -364,12 +364,12 @@ odkaz na ni si ale ulož, jiný přístup k objednávce není)</label>
 <div class="small muted">
 <p><b>Jak na to:</b> u dopravce si objednej a zaplať přepravu, jako
 <b>odesílatele i adresáta vyplň sebe</b> a vyber výdejní box. Dostaneš
-podací kód — ten nám sem vlož. Napíšeme ho na krabici a vložíme do boxu;
+podací kód — ten vlož sem. Napíše se na krabici a zásilka půjde do boxu;
 potvrzení o podání a sledování přijde na tvůj e-mail.</p>
 <p><b>Balíkovna:</b> podání do AlzaBoxu / Penguin Boxu, kód platí 7 dní,
 do 15 kg. <b>PPL:</b> podání do ParcelBoxu, SMART PIN platí 15 dní,
-hodnota zásilky do 5 000 Kč. Přepravu neplatíme ani nereklamujeme my —
-smlouvu s dopravcem máš ty (proto o tobě nic nevíme).</p>
+hodnota zásilky do 5 000 Kč. Přepravu nikdo odsud neplatí ani nereklamuje —
+smlouvu s dopravcem máš ty (proto o tobě nejsou žádné údaje).</p>
 </div>
 </div>
 </fieldset>
@@ -430,7 +430,7 @@ def order_body(order, items, codes):
 <tr><th colspan="2">k úhradě</th><th>%s sat</th></tr></table>
 <div class="linkbox">
 <b>Ulož si odkaz na tuhle objednávku.</b> Je jediný přístup k ní — účty
-nevedeme a jinak se k jejímu stavu ani k doplnění podacího kódu nedostaneš.
+nejsou a jinak se k jejímu stavu ani k doplnění podacího kódu nedostaneš.
 <div class="linkrow">
 <input id="ordurl" readonly onclick="this.select()">
 <button type="button" id="ordcopy">Zkopírovat</button>
@@ -478,20 +478,20 @@ new QRCode(document.getElementById("qr"), {text: %s, width: 260, height: 260,
                 order["carrier"] or "", ("dopravce", "podací kód", ""))
             if order["ship_code"]:
                 body += ("<h2>Doprava</h2><p>%s — %s: <b class='mono'>%s</b>."
-                         " Kód napíšeme na krabici a podáme ji; potvrzení ti "
+                         " Kód se napíše na krabici a zásilka se podá; potvrzení ti "
                          "přijde od dopravce na e-mail.</p>" % (
                              html.escape(name), html.escape(code_label),
                              html.escape(order["ship_code"])))
             elif order["status"] in ("paid", "shipped"):
-                body += ("""<h2>Pošli nám podací kód</h2>
+                body += ("""<h2>Podací kód</h2>
 <p>U dopravce <b>%s</b> si objednej a zaplať přepravu (jako odesílatele
 i adresáta vyplň sebe, vyber výdejní box) — %s. Pak sem vlož %s:</p>
 <form class="inline" method="post" action="%s">
 <input type="text" name="ship_code" placeholder="%s" autocomplete="off"
  style="max-width:16rem" required>
 <button type="submit">Uložit kód</button></form>
-<p class="small muted">Bez kódu zásilku nemůžeme podat — a víc od tebe
-nepotřebujeme. Kód nám pošli až ve chvíli, kdy ho máš: jeho platnost běží
+<p class="small muted">Bez kódu se zásilka podat nedá — a víc není potřeba.
+Vlož ho až ve chvíli, kdy ho máš: jeho platnost běží
 od chvíle, kdy ti ho dopravce vystaví.</p>""" % (
                     html.escape(name), html.escape(note),
                     html.escape(code_label), u("/o/%s/kod" % token),
@@ -499,8 +499,8 @@ od chvíle, kdy ti ho dopravce vystaví.</p>""" % (
         elif order["delivery"] == "personal" and not order["wiped"]:
             body += ("<h2>Osobní předání</h2><p>Domluva probíhá přes komunitu"
                      " — ozvi se tam, kde jsi o Phone21 slyšel (sraz,"
-                     " skupina). Ukaž nám tuhle stránku, podle ní objednávku"
-                     " najdeme; nic dalšího od tebe nechceme.</p>")
+                     " skupina). Stačí ukázat tuhle stránku, podle ní se objednávka"
+                     " najde; nic dalšího potřeba není.</p>")
         elif order["delivery"] in ("point", "anon") and not order["wiped"]:
             # legacy objednávky ze starého modelu doručení
             body += ("<p class='small muted'>Doručení: %s %s</p>" % (
@@ -509,7 +509,7 @@ od chvíle, kdy ti ho dopravce vystaví.</p>""" % (
         if st == "paid" and not order["wiped"]:
             body += ("""<details><summary>Nemůžeš pokračovat?</summary>
 <p>Když nemáš jak poslat podací kód nebo si zboží rozmyslíš, objednávku
-zruš — zboží vrátíme do nabídky a peníze ti pošleme zpět.</p>
+zruš — zboží se vrátí do nabídky a peníze putují zpátky k tobě.</p>
 <form class="inline" method="post" action="%s">
 <button class="danger" type="submit">Zrušit objednávku a vrátit peníze</button>
 </form></details>""" % u("/o/%s/zruseni" % token))
@@ -517,11 +517,11 @@ zruš — zboží vrátíme do nabídky a peníze ti pošleme zpět.</p>
     if st == "refund" and not order["wiped"]:
         saved = (("Uloženo: " + html.escape(order["refund_dest"]))
                  if order["refund_dest"] else
-                 "Fakturu vystav s delší platností, ať ji stihneme zaplatit.")
-        body += ("""<h2>Vracíme ti peníze</h2>
-<p>Objednávka neproběhla, ale tvoje platba u nás je. Nemáme na tebe žádný
-kontakt, takže nám sem vlož <b>Lightning fakturu na %s sat</b> (nebo
-Lightning adresu) a peníze pošleme zpět.</p>
+                 "Fakturu vystav s delší platností, ať ji jde v klidu zaplatit.")
+        body += ("""<h2>Vrácení peněz</h2>
+<p>Objednávka neproběhla, ale tvoje platba dorazila. Kontakt na tebe nikde
+není, takže sem vlož <b>Lightning fakturu na %s sat</b> (nebo Lightning
+adresu) a peníze se pošlou zpátky.</p>
 <form class="inline" method="post" action="%s">
 <input type="text" name="dest" placeholder="lnbc… nebo jmeno@penezenka.cz"
  autocomplete="off" style="max-width:26rem" required>
@@ -687,7 +687,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def post_refund_dest(self, token, form):
         """Kam poslat peníze zpět — jediná věc, kterou od zákazníka
-        potřebujeme, a jen když se vrací platba."""
+        potřeba, a jen když se vrací platba."""
         token = "".join(c for c in token if c.isalnum() or c in "-_")
         order = store.get_order(token)
         if not order or order["status"] != "refund":
@@ -750,8 +750,8 @@ class Handler(BaseHTTPRequestHandler):
             pairs.append((prod, qty))
 
         # 2. doručení (jen když je v košíku fyzická položka). Přepravu si
-        # objednává zákazník sám — od nás nechce nic než napsat kód na krabici,
-        # takže o něm neukládáme žádný osobní údaj.
+        # objednává zákazník sám — potřeba je jen napsat kód na krabici,
+        # takže se o něm neukládá žádný osobní údaj.
         physical = any(p["kind"] == "physical" for p, _q in pairs)
         delivery = carrier = ship_code = None
         if physical:

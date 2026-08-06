@@ -546,7 +546,7 @@ class LifecycleSafetyTests(unittest.TestCase):
         self.assertEqual(store.get_order(token)["status"], "refund")
         self.assertEqual(store.get_product(self.box["id"])["stock"], 3)
         _st, _h, body = self.c.get("/o/" + token)
-        self.assertIn("Vracíme ti peníze", body)
+        self.assertIn("Vrácení peněz", body)
         st, _h, _b = self.c.post("/o/%s/vraceni" % token,
                                  {"dest": "lnbc1refundtest"})
         self.assertEqual(st, 303)
