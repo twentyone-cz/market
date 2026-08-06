@@ -777,8 +777,11 @@ SEED_PRODUCTS = (
      900_000, "physical", 0, 0, "modem.jpg"),
     ("Dárkový kredit obchodu", "Kód na nákup čehokoli tady — dárek bez "
      "vyzvídání adresy.", 100_000, "voucher", 0, -1, ""),
+    # POZOR na dvojí pravdu: síť účtuje 300 sat za zařízení a den
+    # (price_per_credit u koordinátora) — cena tady musí být 30 × ta částka,
+    # jinak obchod prodává tytéž dny za jiné peníze než účet sítě
     ("Dárkové dny privátní sítě (30)", "Kód na 30 dní privátní sítě — "
-     "obdarovaný ho uplatní na svém účtu.", 12_000, "days", 30, -1, ""),
+     "obdarovaný ho uplatní na svém účtu.", 9_000, "days", 30, -1, ""),
 )
 
 
