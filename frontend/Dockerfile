@@ -1,6 +1,8 @@
 FROM python:3.12-slim
 WORKDIR /app
-COPY app.py admin.py store.py payments.py captcha.py vouchers.py ./
+# všechny moduly, ne výčet — vyjmenovaný seznam se zapomene doplnit
+# a obraz pak spadne na ModuleNotFoundError až v provozu
+COPY *.py ./
 COPY static/ static/
 VOLUME /var/lib/obchod
 EXPOSE 8093
