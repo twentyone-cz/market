@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import captcha
 import payments
+import notify
 import store
 
 ADMIN_PORT = int(os.environ.get("ADMIN_PORT", "8094"))
@@ -285,6 +286,18 @@ def settings_body(msg=""):
 <label>Partner secret %s</label>
 <input type="password" name="cockscale_partner_secret" placeholder="%s">
 </fieldset>
+<fieldset><legend>Upozornění na objednávky (Nostr)</legend>
+<p class="msg">Po zaplacení přijde šifrovaná zpráva (NIP-04) na tvůj klíč.
+Bez vyplnění se nic neposílá — objednávky pak uvidíš jen tady.</p>
+<label>Můj klíč — komu poslat (npub… nebo hex)</label>
+<input type="text" name="nostr_to" value="%s" placeholder="npub1…">
+<label>Odesílací klíč obchodu (nsec… nebo hex) %s</label>
+<input type="password" name="nostr_sk" placeholder="%s">
+<label>Relaye (oddělené čárkou)</label>
+<input type="text" name="nostr_relays" value="%s"
+ placeholder="wss://relay.damus.io, wss://nos.lol">
+<p><button type="submit" formaction="/settings/nostr-test" class="small">Poslat zkušební zprávu</button></p>
+</fieldset>
 <fieldset><legend>Objednávky</legend>%s</fieldset>
 <button type="submit">Uložit</button>
 </form>
@@ -310,6 +323,12 @@ def settings_body(msg=""):
         else '<span class="warn">(nenastaven)</span>',
         "beze změny" if setting("cockscale_partner_secret",
                                 "COCKSCALE_PARTNER_SECRET") else "vlož secret",
+        html.escape(setting("nostr_to", "NOSTR_TO")),
+        '<span class="ok">(nastaven)</span>' if setting("nostr_sk", "NOSTR_SK")
+        else '<span class="warn">(nenastaven)</span>',
+        "beze změny" if setting("nostr_sk", "NOSTR_SK") else "vlož klíč",
+        html.escape(setting("nostr_relays", "NOSTR_RELAYS",
+                            "wss://relay.damus.io, wss://nos.lol")),
         fields)
 
 
@@ -383,6 +402,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.post_settings_test(form)
         if path == "/settings/captcha-test":
             return self.post_captcha_test(form)
+        if path == "/settings/nostr-test":
+            return self.post_nostr_test(form)
         if path == "/password":
             return self.post_password(form)
         self._send(404, page("404", "<h1>404</h1>"))
@@ -449,10 +470,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def post_settings(self, form):
         for key in ("lnbits_url", "captcha_api", "captcha_site_key",
-                    "cockscale_api"):
+                    "cockscale_api", "nostr_to", "nostr_relays"):
             store.set_setting(key, form.get(key, "").strip())
         for key in ("lnbits_invoice_key", "captcha_site_secret",
-                    "cockscale_partner_secret"):
+                    "cockscale_partner_secret", "nostr_sk"):
             val = form.get(key, "").strip()
             if val:  # prázdné pole = beze změny
                 store.set_setting(key, val)
@@ -487,6 +508,19 @@ class Handler(BaseHTTPRequestHandler):
         secret = form.get("captcha_site_secret", "").strip() or setting(
             "captcha_site_secret", "CAPTCHA_SITE_SECRET")
         _ok, msg = captcha.selftest(api, secret)
+        self._send(200, page("Nastavení", settings_body(), msg=msg))
+
+    def post_nostr_test(self, form):
+        to = form.get("nostr_to", "").strip() or setting("nostr_to", "NOSTR_TO")
+        sk = form.get("nostr_sk", "").strip() or setting("nostr_sk", "NOSTR_SK")
+        relays = form.get("nostr_relays", "").strip() or setting(
+            "nostr_relays", "NOSTR_RELAYS")
+        if not (to and sk and relays):
+            msg = "Vyplň klíč příjemce, odesílací klíč i relaye."
+        else:
+            ok, err = notify.send("Zkušební zpráva z obchodu Phone21.",
+                                  to=to, sk=sk, relays=relays)
+            msg = "Odesláno — mrkni do klienta." if ok else "Nepodařilo se: " + err
         self._send(200, page("Nastavení", settings_body(), msg=msg))
 
     def post_password(self, form):

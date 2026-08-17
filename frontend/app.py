@@ -22,6 +22,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import captcha
+import notify
 import payments
 import store
 import vouchers
@@ -99,6 +100,7 @@ def apply_settlement(token):
         vouchers.issue_for_order(token)
         store.bump_stat("stat_orders", 1)
         store.bump_stat("stat_sat", order["total_sat"])
+        notify.order_paid(store.get_order(token), store.get_items(token))
 
 
 def hash_state(payment_hash):
@@ -194,6 +196,7 @@ def recover_late_payment(order, payment):
         vouchers.issue_for_order(token)
         store.bump_stat("stat_orders", 1)
         store.bump_stat("stat_sat", order["total_sat"])
+        notify.order_paid(store.get_order(token), store.get_items(token))
         return
     if ok:
         store.return_stock(token)
@@ -643,6 +646,7 @@ class Handler(BaseHTTPRequestHandler):
                 "(číslice/písmena). <a href=\"%s\">Zpět na objednávku</a></p>"
                 % u("/o/" + token)))
         store.set_ship_code(token, code)
+        notify.ship_code_arrived(store.get_order(token))
         self._redirect(u("/o/" + token))
 
     def get_pay_poll(self, qs):

@@ -7,7 +7,7 @@
 services:
   obchod:
     build: ./frontend
-    image: it-one.cz/21/market:latest
+    image: ghcr.io/twentyone-cz/market:latest
     container_name: obchod
     restart: unless-stopped
     ports:
