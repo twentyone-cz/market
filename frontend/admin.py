@@ -43,16 +43,68 @@ def hash_password(password):
 
 
 def check_password(password):
+    """Platí heslo nastavené v administraci i to z prostředí. Heslo
+    z prostředí je záchranná cesta: kdo má přístup k serveru, dostane se
+    dovnitř i po zapomenutí toho uloženého."""
+    if not password:
+        return False
     stored = store.get_setting("admin_password_hash")
     if stored:
         try:
             _, iters, salt_hex, digest_hex = stored.split("$")
             digest = hashlib.pbkdf2_hmac(
                 "sha256", password.encode(), bytes.fromhex(salt_hex), int(iters))
-            return hmac.compare_digest(digest.hex(), digest_hex)
+            if hmac.compare_digest(digest.hex(), digest_hex):
+                return True
         except (ValueError, TypeError):
-            return False
+            pass
     return bool(ADMIN_PASSWORD) and hmac.compare_digest(password, ADMIN_PASSWORD)
+
+
+# --- přihlášení formulářem (Basic auth dialog nedá spolupracovat správcům
+# hesel a nejde se z něj odhlásit) ---------------------------------------------
+
+SESSION_TTL = 12 * 3600
+_sessions = {}
+_sessions_lock = threading.Lock()
+
+
+def session_new():
+    token = secrets.token_urlsafe(24)
+    with _sessions_lock:
+        now = time.time()
+        for old, exp in list(_sessions.items()):
+            if exp < now:
+                del _sessions[old]
+        _sessions[token] = now + SESSION_TTL
+    return token
+
+
+def session_valid(token):
+    with _sessions_lock:
+        exp = _sessions.get(token or "")
+        if not exp:
+            return False
+        if exp < time.time():
+            del _sessions[token]
+            return False
+        return True
+
+
+def session_drop(token):
+    with _sessions_lock:
+        _sessions.pop(token or "", None)
+
+
+def login_body(msg=""):
+    return """<h1>Přihlášení</h1>
+<form method="post" action="/login">
+<label>Uživatel</label>
+<input type="text" name="user" value="admin" readonly autocomplete="username">
+<label>Heslo</label>
+<input type="password" name="password" autocomplete="current-password" autofocus>
+<p><button type="submit">Přihlásit</button></p>
+</form>"""
 
 
 def fmt_ts(ts):
@@ -356,17 +408,18 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
+    def _session_token(self):
+        raw = self.headers.get("Cookie") or ""
+        for part in raw.split(";"):
+            name, _, value = part.strip().partition("=")
+            if name == "obchod_admin":
+                return value
+        return ""
+
     def _authed(self):
-        header = self.headers.get("Authorization") or ""
-        if header.startswith("Basic "):
-            try:
-                _, _, password = base64.b64decode(header[6:]).decode().partition(":")
-            except (ValueError, UnicodeDecodeError):
-                password = ""
-            if password and check_password(password):
-                return True
-        self._send(401, "auth required",
-                   {"WWW-Authenticate": 'Basic realm="obchod admin"'})
+        if session_valid(self._session_token()):
+            return True
+        self._send(200, page("Přihlášení", login_body()))
         return False
 
     def _form(self):
@@ -375,9 +428,15 @@ class Handler(BaseHTTPRequestHandler):
         return {k: v[0] for k, v in urllib.parse.parse_qs(raw).items()}
 
     def do_GET(self):
+        path = urllib.parse.urlparse(self.path).path
+        if path == "/login":
+            return self._send(200, page("Přihlášení", login_body()))
+        if path == "/logout":
+            session_drop(self._session_token())
+            return self._send(200, page("Přihlášení", login_body(),
+                                        msg="Odhlášeno."))
         if not self._authed():
             return
-        path = urllib.parse.urlparse(self.path).path
         if path == "/":
             return self._send(200, page("Objednávky",
                                         orders_body(_deps["manager"])))
@@ -388,6 +447,8 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, page("404", "<h1>404</h1>"))
 
     def do_POST(self):
+        if urllib.parse.urlparse(self.path).path == "/login":
+            return self.post_login(self._form())
         if not self._authed():
             return
         path = urllib.parse.urlparse(self.path).path
@@ -407,6 +468,17 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/password":
             return self.post_password(form)
         self._send(404, page("404", "<h1>404</h1>"))
+
+    def post_login(self, form):
+        if not check_password(form.get("password", "")):
+            return self._send(200, page("Přihlášení", login_body(),
+                                        msg="Heslo nesedí."))
+        token = session_new()
+        self._send(303, "", {
+            "Location": "/",
+            "Set-Cookie": ("obchod_admin=%s; Path=/; HttpOnly; SameSite=Lax; "
+                           "Max-Age=%d" % (token, SESSION_TTL)),
+        })
 
     def post_order(self, form):
         token = form.get("token", "")

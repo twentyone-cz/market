@@ -373,8 +373,10 @@ class AdminTests(unittest.TestCase):
                           cancel_order=app.cancel_order)
         cls.srv = srv
         cls.c = Client(srv.server_address[1])
-        cls.auth = {"Authorization": "Basic " + base64.b64encode(
-            b"x:test-heslo-123").decode()}
+        # přihlášení formulářem → sušenka se session
+        st, h, _b = cls.c.post("/login", {"password": "test-heslo-123"})
+        assert st == 303, st
+        cls.auth = {"Cookie": h["Set-Cookie"].split(";", 1)[0]}
 
     @classmethod
     def tearDownClass(cls):
@@ -385,13 +387,38 @@ class AdminTests(unittest.TestCase):
         self.box, self.vou, self.day = seed_shop()
 
     def test_auth_required(self):
-        st, _h, _b = self.c.get("/")
-        self.assertEqual(st, 401)
-        st, _h, _b = self.c.get("/", headers={"Authorization": "Basic " +
-                                base64.b64encode(b"x:spatne").decode()})
-        self.assertEqual(st, 401)
-        st, _h, _b = self.c.get("/", headers=self.auth)
+        # bez přihlášení se místo obsahu ukáže formulář
+        st, _h, body = self.c.get("/")
         self.assertEqual(st, 200)
+        self.assertIn("Přihlášení", body)
+        self.assertNotIn("Objednávky</h1>", body)
+        # špatné heslo session nedá
+        st, h, body = self.c.post("/login", {"password": "spatne"})
+        self.assertEqual(st, 200)
+        self.assertIn("nesedí", body)
+        self.assertNotIn("Set-Cookie", h)
+        # se session projde
+        st, _h, body = self.c.get("/", headers=self.auth)
+        self.assertEqual(st, 200)
+        self.assertIn("Objednávky", body)
+
+    def test_logout_kills_session(self):
+        st, h, _b = self.c.post("/login", {"password": "test-heslo-123"})
+        cookie = {"Cookie": h["Set-Cookie"].split(";", 1)[0]}
+        self.assertEqual(self.c.get("/", headers=cookie)[0], 200)
+        self.c.get("/logout", headers=cookie)
+        _st, _h, body = self.c.get("/", headers=cookie)
+        self.assertIn("Přihlášení", body)
+
+    def test_env_password_works_next_to_stored_hash(self):
+        # heslo z prostředí je záchranná cesta i když je v databázi hash
+        store.set_setting("admin_password_hash", admin.hash_password("jine-heslo"))
+        try:
+            self.assertTrue(admin.check_password("jine-heslo"))
+            self.assertTrue(admin.check_password("test-heslo-123"))
+            self.assertFalse(admin.check_password("nesmysl"))
+        finally:
+            store.set_setting("admin_password_hash", "")
 
     def test_order_actions(self):
         store.create_order("tok", 100, "code", "balikovna", "12345678")
@@ -457,7 +484,10 @@ class AdminTests(unittest.TestCase):
                                   "new1": "nove-heslo-8", "new2": "nove-heslo-8"},
                     headers=self.auth)
         self.assertTrue(admin.check_password("nove-heslo-8"))
-        self.assertFalse(admin.check_password("test-heslo-123"))
+        self.assertFalse(admin.check_password("uplne-jine"))
+        # heslo z prostředí ZÁMĚRNĚ platí dál — kdo má server, dostane se
+        # dovnitř i po zapomenutí toho nastaveného v administraci
+        self.assertTrue(admin.check_password("test-heslo-123"))
         store.set_setting("admin_password_hash", "")  # necháme env pro další testy
         store._execute("DELETE FROM settings WHERE key='admin_password_hash'")
 
