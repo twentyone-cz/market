@@ -97,6 +97,50 @@ class Keys(unittest.TestCase):
         self.assertEqual(nostr.to_hex_key(npub), nostr.pubkey_hex(sk_hex))
 
 
+class SendDm(unittest.TestCase):
+    SK = "b7e151628aed2a6abf7158809cf4f3c762e7160f38b4da56a784d9045190cfef"
+
+    def _send(self, results):
+        """send_dm s podvrženým publish; vrací (ok, err, oslovené relaye)."""
+        calls = []
+        orig = nostr.publish
+
+        def fake_publish(relay, event, timeout=10):
+            calls.append(relay)
+            return results[relay]
+
+        nostr.publish = fake_publish
+        try:
+            ok, err = nostr.send_dm(self.SK, nostr.pubkey_hex(self.SK),
+                                    list(results), "test")
+        finally:
+            nostr.publish = orig
+        return ok, err, calls
+
+    def test_publishes_to_all_relays_even_after_success(self):
+        # regrese 2026-08-18: konec po prvním úspěchu nechal DM na relayi,
+        # kde příjemce nečte
+        ok, err, calls = self._send({"wss://a": (True, ""),
+                                     "wss://b": (True, "")})
+        self.assertTrue(ok)
+        self.assertEqual(err, "")
+        self.assertEqual(calls, ["wss://a", "wss://b"])
+
+    def test_partial_failure_is_success_with_note(self):
+        ok, err, calls = self._send({"wss://a": (False, "503"),
+                                     "wss://b": (True, "")})
+        self.assertTrue(ok)
+        self.assertIn("wss://a: 503", err)
+        self.assertEqual(len(calls), 2)
+
+    def test_all_failed(self):
+        ok, err, _calls = self._send({"wss://a": (False, "x"),
+                                      "wss://b": (False, "y")})
+        self.assertFalse(ok)
+        self.assertIn("wss://a: x", err)
+        self.assertIn("wss://b: y", err)
+
+
 class Nip04(unittest.TestCase):
     SK = "b7e151628aed2a6abf7158809cf4f3c762e7160f38b4da56a784d9045190cfef"
     RECIPIENT_SK = "c90fdaa22168c234c4c6628b80dc1cd129024e088a67cc74020bbea63b14e5c9"

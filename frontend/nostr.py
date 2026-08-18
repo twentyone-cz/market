@@ -331,14 +331,22 @@ def publish(relay_url, event, timeout=10):
 
 
 def send_dm(privkey, recipient, relays, text):
-    """Rozešle zprávu na všechny relaye. Stačí jeden úspěch."""
+    """Publikuje zprávu na VŠECHNY relaye; úspěch = aspoň jedna přijala.
+
+    Dřív se končilo prvním úspěchem — DM pak ležela jen na jednom relayi,
+    a když to nebyl žádný z těch, kde příjemce čte (NIP-65), nikdy ji
+    neviděl (přesně to se stalo 2026-08-18). U pošty nestačí „někde
+    uložena": musí být všude, kde se příjemce může dívat."""
     priv = to_hex_key(privkey)
     to = to_hex_key(recipient)
     event = build_dm(priv, to, text)
-    errors = []
+    accepted, errors = 0, []
     for relay in relays:
         ok, err = publish(relay.strip(), event)
         if ok:
-            return True, ""
-        errors.append("%s: %s" % (relay.strip(), err))
+            accepted += 1
+        else:
+            errors.append("%s: %s" % (relay.strip(), err))
+    if accepted:
+        return True, "; ".join(errors)  # dílčí výpadky jen informativně
     return False, "; ".join(errors)

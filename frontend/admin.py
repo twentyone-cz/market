@@ -605,7 +605,12 @@ class Handler(BaseHTTPRequestHandler):
         else:
             ok, err = notify.send("Zkušební zpráva z obchodu Phone21.",
                                   to=to, sk=sk, relays=relays)
-            msg = "Odesláno — mrkni do klienta." if ok else "Nepodařilo se: " + err
+            if ok:
+                msg = "Odesláno — mrkni do klienta."
+                if err:  # část relayí selhala — vidět, ale není to chyba
+                    msg += " Pozor, ne všude: %s" % err
+            else:
+                msg = "Nepodařilo se: " + err
         self._send(200, page("Nastavení", settings_body(), msg=msg))
 
     def post_nostr_generate(self, form):
