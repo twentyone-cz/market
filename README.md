@@ -15,6 +15,12 @@ z [CockScale](../CockScale) (payments/captcha/admin/settings 1:1).
 - **Digitální kódy** se generují automaticky po zaplacení; dny privátní
   sítě se registrují u CockScale (fronta s retry — kontrakt viz
   `CockScale/docs/obchod-vouchery-handoff.md`).
+- **Upozornění obsluze**: šifrovaná Nostr DM (NIP-04, kind 4) po zaplacení.
+  Odesílací klíč obchodu jde vygenerovat přímo v adminu (Nastavení —
+  zobrazuje se jen npub, nsec zůstává v DB). Zpráva se publikuje na
+  VŠECHNY nakonfigurované relaye — mezi nimi musí být ty, kde příjemce
+  čte (NIP-65), jinak ji nikdy neuvidí. Pozor na relaye s web-of-trust
+  politikou: čerstvý klíč obchodu odmítají, dokud ho někdo nesleduje.
 - **Compute Captcha** před checkoutem (ekonomická bariéra na vystavování
   invoice), rate limit per IP (jen RAM).
 
@@ -23,7 +29,11 @@ z [CockScale](../CockScale) (payments/captcha/admin/settings 1:1).
 Web `:8093` (za nginx na `phone.twentyone.cz/obchod`, `BASE_PATH=/obchod`),
 admin `:8094` — **jen LAN**. Tajemství se vkládají v adminu za běhu
 (Nastavení): LNbits URL + invoice key ODDĚLENÉ peněženky „obchod",
-captcha klíče, CockScale partner secret.
+captcha klíče, CockScale partner secret, Nostr klíče pro notifikace.
+
+Produkce běží na CockScale LXC (10.249.137.24) v `/opt/Obchod` — **není
+to git checkout**: nasazuje se kopií `frontend/` (tar přes ssh) +
+`docker compose build obchod && docker compose up -d obchod`.
 
 ```bash
 ADMIN_PASSWORD=... docker compose up -d          # produkce
