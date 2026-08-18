@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import captcha
 import payments
+import nostr
 import notify
 import store
 
@@ -310,6 +311,11 @@ tady se jen vybírají.</p>
 def settings_body(msg=""):
     lnbits_url = setting("lnbits_url", "LNBITS_URL")
     has_key = bool(setting("lnbits_invoice_key", "LNBITS_INVOICE_KEY"))
+    nostr_sk = setting("nostr_sk", "NOSTR_SK")
+    try:  # u nastaveného klíče ukázat odesílací identitu (npub)
+        nostr_npub = nostr.npub_of(nostr_sk) if nostr_sk else ""
+    except ValueError:
+        nostr_npub = ""
     fields = ""
     for key, env, label in SETTING_FIELDS:
         fields += '<label>%s</label><input type="number" name="%s" value="%s">' % (
@@ -348,7 +354,8 @@ Bez vyplnění se nic neposílá — objednávky pak uvidíš jen tady.</p>
 <label>Relaye (oddělené čárkou)</label>
 <input type="text" name="nostr_relays" value="%s"
  placeholder="wss://relay.damus.io, wss://nos.lol">
-<p><button type="submit" formaction="/settings/nostr-test" class="small">Poslat zkušební zprávu</button></p>
+<p><button type="submit" formaction="/settings/nostr-test" class="small">Poslat zkušební zprávu</button>
+<button type="submit" formaction="/settings/nostr-generate" class="small"%s>Vygenerovat nový odesílací klíč</button></p>
 </fieldset>
 <fieldset><legend>Objednávky</legend>%s</fieldset>
 <button type="submit">Uložit</button>
@@ -376,11 +383,15 @@ Bez vyplnění se nic neposílá — objednávky pak uvidíš jen tady.</p>
         "beze změny" if setting("cockscale_partner_secret",
                                 "COCKSCALE_PARTNER_SECRET") else "vlož secret",
         html.escape(setting("nostr_to", "NOSTR_TO")),
-        '<span class="ok">(nastaven)</span>' if setting("nostr_sk", "NOSTR_SK")
-        else '<span class="warn">(nenastaven)</span>',
-        "beze změny" if setting("nostr_sk", "NOSTR_SK") else "vlož klíč",
+        ('<span class="ok">(nastaven — píše jako %s)</span>' % nostr_npub
+         if nostr_npub else
+         '<span class="ok">(nastaven)</span>' if nostr_sk
+         else '<span class="warn">(nenastaven)</span>'),
+        "beze změny" if nostr_sk else "vlož klíč, nebo si ho vygeneruj",
         html.escape(setting("nostr_relays", "NOSTR_RELAYS",
                             "wss://relay.damus.io, wss://nos.lol")),
+        (' onclick="return confirm(\'Přepsat stávající odesílací klíč? '
+         "Zprávy pak budou chodit z nové identity.')\"" if nostr_sk else ""),
         fields)
 
 
@@ -465,6 +476,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.post_captcha_test(form)
         if path == "/settings/nostr-test":
             return self.post_nostr_test(form)
+        if path == "/settings/nostr-generate":
+            return self.post_nostr_generate(form)
         if path == "/password":
             return self.post_password(form)
         self._send(404, page("404", "<h1>404</h1>"))
@@ -594,6 +607,15 @@ class Handler(BaseHTTPRequestHandler):
                                   to=to, sk=sk, relays=relays)
             msg = "Odesláno — mrkni do klienta." if ok else "Nepodařilo se: " + err
         self._send(200, page("Nastavení", settings_body(), msg=msg))
+
+    def post_nostr_generate(self, form):
+        """Nový odesílací klíč rovnou do nastavení — nsec se nikde nezobrazuje,
+        obsluha potřebuje jen npub (pozná podle něj odesílatele zpráv)."""
+        nsec, npub = nostr.generate_keypair()
+        store.set_setting("nostr_sk", nsec)
+        self._send(200, page("Nastavení", settings_body(),
+                             msg="Nový odesílací klíč vygenerován a uložen — "
+                                 "obchod teď píše jako %s." % npub))
 
     def post_password(self, form):
         current = form.get("current", "")

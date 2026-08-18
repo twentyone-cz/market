@@ -66,14 +66,35 @@ class Keys(unittest.TestCase):
         hex_key = "b7e151628aed2a6abf7158809cf4f3c762e7160f38b4da56a784d9045190cfef"
         self.assertEqual(nostr.to_hex_key(hex_key), hex_key)
         self.assertEqual(nostr.to_hex_key(hex_key.upper()), hex_key)
-        # nsec téhož klíče (bech32)
-        nsec = ("nsec1k7g23v230d9x40m3tzqfeafnca3ww9s7w95mftf4uym3q4rya7ls6zwtyt")
-        self.assertEqual(len(nostr.to_hex_key(nsec)), 64)
+        # oficiální vektor z NIP-19 (dřívější vektor tu byl vadný — dekódoval
+        # na jiný klíč a test kontroloval jen délku, tak to nebylo vidět)
+        nsec = ("nsec1vl029mgpspedva04g90vltkh6fvh240zqtv9k0t9af8935ke9laqsnlfe5")
+        self.assertEqual(
+            nostr.to_hex_key(nsec),
+            "67dea2ed018072d675f5415ecfaed7d2597555e202d85b3d65ea4e58d2d92ffa")
 
     def test_rejects_nonsense(self):
         for bad in ("", "abc", "npub1"):
             with self.assertRaises(Exception):
                 nostr.to_hex_key(bad)
+
+    def test_bech32_encode_roundtrip(self):
+        # encode musí vyrobit přesně nsec z NIP-19 (včetně kontrolního součtu)
+        hex_key = "67dea2ed018072d675f5415ecfaed7d2597555e202d85b3d65ea4e58d2d92ffa"
+        nsec = "nsec1vl029mgpspedva04g90vltkh6fvh240zqtv9k0t9af8935ke9laqsnlfe5"
+        self.assertEqual(nostr._bech32_encode("nsec", bytes.fromhex(hex_key)),
+                         nsec)
+        self.assertEqual(nostr.to_hex_key(nsec), hex_key)
+
+    def test_generate_keypair(self):
+        nsec, npub = nostr.generate_keypair()
+        self.assertTrue(nsec.startswith("nsec1"))
+        self.assertTrue(npub.startswith("npub1"))
+        sk_hex = nostr.to_hex_key(nsec)
+        self.assertTrue(1 <= int(sk_hex, 16) < nostr.N)
+        # npub odpovídá privátnímu klíči a dá se zpátky rozložit
+        self.assertEqual(nostr.npub_of(nsec), npub)
+        self.assertEqual(nostr.to_hex_key(npub), nostr.pubkey_hex(sk_hex))
 
 
 class Nip04(unittest.TestCase):

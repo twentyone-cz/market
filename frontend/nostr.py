@@ -136,6 +136,48 @@ def to_hex_key(text):
     return raw.hex()
 
 
+def _bech32_polymod(values):
+    gen = (0x3B6A57B2, 0x26508E6D, 0x1EA119FA, 0x3D4233DD, 0x2A1462B3)
+    chk = 1
+    for v in values:
+        b = chk >> 25
+        chk = (chk & 0x1FFFFFF) << 5 ^ v
+        for i in range(5):
+            chk ^= gen[i] if b >> i & 1 else 0
+    return chk
+
+
+def _bech32_encode(hrp, raw):
+    """Protějšek _bech32_decode, s kontrolním součtem (BIP-173)."""
+    data, acc, bits = [], 0, 0
+    for byte in raw:
+        acc = acc << 8 | byte
+        bits += 8
+        while bits >= 5:
+            bits -= 5
+            data.append(acc >> bits & 31)
+    if bits:
+        data.append(acc << (5 - bits) & 31)
+    hrpx = [ord(c) >> 5 for c in hrp] + [0] + [ord(c) & 31 for c in hrp]
+    chk = _bech32_polymod(hrpx + data + [0] * 6) ^ 1
+    data += [chk >> 5 * (5 - i) & 31 for i in range(6)]
+    return hrp + "1" + "".join(_CHARSET[d] for d in data)
+
+
+def npub_of(key_text):
+    """Veřejná identita (npub…) k privátnímu klíči (nsec… nebo hex)."""
+    return _bech32_encode("npub",
+                          bytes.fromhex(pubkey_hex(to_hex_key(key_text))))
+
+
+def generate_keypair():
+    """Nový privátní klíč, vrací (nsec, npub). Klíč se nikam neloguje."""
+    while True:  # mimo rozsah křivky padne ~2^-128, ale kontrola je zadarmo
+        raw = secrets.token_bytes(32)
+        if 1 <= int.from_bytes(raw, "big") < N:
+            return _bech32_encode("nsec", raw), npub_of(raw.hex())
+
+
 # --- NIP-04 ------------------------------------------------------------------
 
 def _shared_x(privkey_hex, pubkey_hex_x):
