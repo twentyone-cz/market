@@ -264,7 +264,10 @@ document.addEventListener("DOMContentLoaded",cartBadge);
 </div></header>
 <main class="container">%s</main>
 <footer><a href="%s">Phone21</a> · <a href="%s">návod</a> ·
-žádné účty · platba Lightningem · doručovací údaje se po vyřízení mažou</footer>
+žádné účty · platba Lightningem · doručovací údaje se po vyřízení mažou
+<p>21&nbsp;%% zisku jde na podporu české bitcoinové komunity
+<a href="https://jednadvacet.org/">Jednadvacet</a>.
+Dotazy a&nbsp;novinky: <a href="https://signal.group/#CjQKICmoKjOVbdR0LyWIVcwUXF0J8936DWpigeQixb7Zy48zEhB-mUTZ-Y6CxGUMUHZ2SbKp">skupina na Signalu</a>.</p></footer>
 %s</body></html>""" % (
         html.escape(title), u("/static/style.css"), u("/static/qrcode.min.js"),
         SITE_HOME, u("/"), u("/kosik"), SITE_DOCS, SITE_ACCOUNT, body,

@@ -267,6 +267,7 @@ footer {
   padding: 1.2rem 0;
   text-align: center;
 }
+footer p { margin: .4rem 0 0; }
 
 
 /* ---- Tmavý režim ---------------------------------------------------------
