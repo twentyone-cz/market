@@ -265,7 +265,8 @@ document.addEventListener("DOMContentLoaded",cartBadge);
 <main class="container">%s</main>
 <footer><a href="%s">Phone21</a> · <a href="%s">návod</a> ·
 žádné účty · platba Lightningem · doručovací údaje se po vyřízení mažou
-<p>21&nbsp;%% zisku jde na podporu české bitcoinové komunity
+<p>Projekty twentyone.cz jsou zpravidla placené, ale za co nejnižší cenu — jen tak je
+můžeme udržet v&nbsp;provozu dlouhodobě. 21&nbsp;%% zisku jde na podporu české bitcoinové komunity
 <a href="https://jednadvacet.org/">Jednadvacet</a>.
 Dotazy a&nbsp;novinky: <a href="https://signal.group/#CjQKICmoKjOVbdR0LyWIVcwUXF0J8936DWpigeQixb7Zy48zEhB-mUTZ-Y6CxGUMUHZ2SbKp">skupina na Signalu</a>.</p></footer>
 %s</body></html>""" % (
